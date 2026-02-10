@@ -1,33 +1,43 @@
 import numpy as np
 import pandas as pd
 import warnings
+from tqdm import tqdm
 from .utils import ensure_lexsorted
 from .selection import select
 from numba import jit
 
 def get_hist(weight,data,bins): return np.histogram(data,bins=bins,weights=weight)[0]
 
-# Vectorized histogram computation instead of apply_along_axis
-# def compute_hists(weights_2d, cv_data, bins):
-#     """Vectorized histogram for multiple universes"""
-#     nuniv = weights_2d.shape[1] if weights_2d.ndim > 1 else 1
-#     hists = np.zeros((nbins, nuniv))
-#     for i in range(nuniv):
-#         w = weights_2d[:, i] if weights_2d.ndim > 1 else weights_2d
-#         hists[:, i] = np.histogram(cv_data, bins, weights=w)[0]
-#     return hists
+def calc_matrices(var_arr, cv):
+    """
+    Calculate covariance, fractional covariance, and correlation matrices.
+    This function computes three related matrices from a set of varied values
+    and their central values: the covariance matrix, the fractional covariance
+    matrix (normalized by central values), and the correlation matrix.
+    Parameters
+    ----------
+    var_arr : np.ndarray
+        2D array of shape (nbins, nuniv) containing variations for each bin and universe.
+        nbins is the number of bins, nuniv is the number of universes/variations.
+    cv : np.ndarray
+        1D array of shape (nbins,) containing central values for each bin.
+
+    Returns
+    -------
+    cov : np.ndarray
+        2D array of shape (nbins, nbins) containing the covariance matrix.
+    cov_frac : np.ndarray
+        2D array of shape (nbins, nbins) containing the fractional covariance matrix
+        (normalized by central values).
+    corr : np.ndarray
+        2D array of shape (nbins, nbins) containing the correlation matrix,
+        derived from the covariance matrix.
+    Notes
+    -----
+    - Uses vectorized/matrix operations for more efficient computation.
+    - Division by zero warnings are suppressed during computation.
+    """
     
-@jit(nopython=True)
-def calc_matrices_numba(var_arr, cv):
-    diffs = var_arr - cv[:, np.newaxis]
-    diffs_norm = diffs / cv[:, np.newaxis]
-
-    cov = (diffs @ diffs.T) / diffs.shape[1]
-    cov_frac = (diffs_norm @ diffs_norm.T) / diffs_norm.shape[1]
-    corr = cov / np.sqrt(np.outer(np.diag(cov),np.diag(cov)))
-    return cov, cov_frac, corr
-
-def calc_matrices(var_arr,cv):
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore",message="invalid value encountered in divide")
         diffs = var_arr - cv[:, np.newaxis]
@@ -40,8 +50,6 @@ def calc_matrices(var_arr,cv):
 def calc_matrices_explicit(var_arr,cv):
     """
     Calculate covariance, fractional covariance, and correlation matrices.
-    This function computes statistical matrices from variations around a central value,
-    commonly used in systematic uncertainty analysis.
     Parameters
     ----------
     var_arr : np.ndarray
@@ -64,7 +72,6 @@ def calc_matrices_explicit(var_arr,cv):
     - Warnings about invalid values in division are suppressed (e.g., division by zero).
     - If an entry has invalid weight (e.g. GENIE weight for true cosmic), the weight is set to 1.0 for that entry.
     - The matrices returned are normalized to n_universes. 
-    - The correlation matrix is computed as: corr[i,j] = cov[i,j] / sqrt(cov[i,i] * cov[j,j])
     """
     
     nbins = len(cv)
@@ -95,7 +102,8 @@ def calc_matrices_explicit(var_arr,cv):
 def get_syst(indf: pd.DataFrame,
              var: str | tuple,
              bins: np.ndarray,
-             scale: bool = True) -> dict:
+             scale: bool = True,
+             normalize: bool = False) -> dict:
     df = indf.copy()
     
     if isinstance(df, pd.DataFrame):
@@ -133,6 +141,7 @@ def get_syst(indf: pd.DataFrame,
     # get cv histogram
     cv_input = df[var]
     cv_hist = np.histogram(cv_input,bins,weights=scaling)[0]
+    cv_counts = np.sum(cv_hist)
 
     syst_dict = {}
     nbins = len(bins) 
@@ -143,6 +152,8 @@ def get_syst(indf: pd.DataFrame,
         weights[np.isnan(weights)] = 1.0
         weights *= scaling
         hists = np.apply_along_axis(get_hist, 0, weights, cv_input, bins)
+        if normalize:
+            hists = hists / np.sum(hists) * cv_counts
         # rename key to only include the relevant part of the column 
         syst_dict[col[2]] = {'hists': np.reshape(hists,(nbins-1,-1))}
     for col in multisig_col:
@@ -153,6 +164,8 @@ def get_syst(indf: pd.DataFrame,
                             np.nan_to_num(df[ms1_col].to_numpy(),copy=False,nan=1.0)]).T
         weights *= scaling[:,np.newaxis]
         hists = np.apply_along_axis(get_hist, 0, weights, cv_input, bins)
+        if normalize:
+            hists = hists / np.sum(hists, axis=0) * cv_counts
         syst_dict[col[2]] = {'hists': hists}
     for col in multisim_col:
         # * for multisim, get all universes automatically
@@ -160,6 +173,8 @@ def get_syst(indf: pd.DataFrame,
         weights[np.isnan(weights)] = 1.0
         weights *= scaling[:,np.newaxis]
         hists = np.apply_along_axis(get_hist, 0, weights, cv_input, bins)
+        if normalize:
+            hists = hists / np.sum(hists, axis=0) * cv_counts
         syst_dict[col[2]] = {'hists': hists}
     for key in syst_dict.keys():
         hists = syst_dict[key]['hists']
@@ -167,7 +182,7 @@ def get_syst(indf: pd.DataFrame,
         syst_dict[key].update({'cov': cov, 'cov_frac': frac, 'corr': corr})
     return syst_dict
 
-def mcstat(indf, nuniv:int=100 , cols: list=['ntuple','entry','rec.slc..index','run','subrun','evt','df_idx']) -> pd.DataFrame:
+def mcstat(indf, nuniv:int=100 , cols: list=['__ntuple','entry','rec.slc..index','run','subrun','evt','df_idx']) -> pd.DataFrame:
     """
     Add MC statistical uncertainty universes to the DataFrame.
     This function generates Poisson-fluctuated weights for each event based on unique seeds
@@ -178,7 +193,7 @@ def mcstat(indf, nuniv:int=100 , cols: list=['ntuple','entry','rec.slc..index','
     Parameters
     ----------
     indf : pd.DataFrame
-        Input DataFrame containing neutrino interaction data.
+        Input dataframe, must contain the columns specified in `cols` for seed generation.
     nuniv : int, optional
         Number of MC statistical universes to create (default is 100).
     cols : list, optional
@@ -219,18 +234,21 @@ def mcstat(indf, nuniv:int=100 , cols: list=['ntuple','entry','rec.slc..index','
     return df.join(mcstat_univ_wgt)
 
 
-def get_detvar_systs(detvar_dict,stage,var, bins,**kwargs):
+def get_detvar_systs(detvar_dict,stage,var, bins,normalize=False,**kwargs):
     matrices_dict = {}
     for i, key in enumerate(detvar_dict.keys()): 
         this_dict = detvar_dict[key]
         this_dv   = this_dict['dv_df']
         this_cv   = this_dict['cv_df']
+        # this is for flux-normalizing
         this_scale= this_dict['scale']
         
         # lexsort to avoid performance warning on columns 
         # forward selection kwargs to select function
         cv_hist = np.histogram(ensure_lexsorted(select(this_cv,**kwargs)[stage],axis=1)[var],bins=bins)[0]
         dv_hist = np.histogram(ensure_lexsorted(select(this_dv,**kwargs)[stage],axis=1)[var],bins=bins)[0]
+        if normalize:
+            dv_hist = dv_hist / np.sum(dv_hist) * np.sum(cv_hist)
         
         cov, cov_frac, corr = calc_matrices(var_arr=np.reshape(dv_hist/this_scale,(len(bins)-1,-1)),cv=cv_hist/this_scale)
         matrices_dict[key] = {'hists':np.reshape(dv_hist/this_scale,(len(bins)-1,-1)),
@@ -239,3 +257,48 @@ def get_detvar_systs(detvar_dict,stage,var, bins,**kwargs):
                               'corr': corr, 
                               'hist_cv': cv_hist/this_scale}
     return matrices_dict
+
+
+def get_syst_df(dicts: list, cv_hist: np.ndarray) -> pd.DataFrame:
+    """Extract diagonal systematic uncertainties from covariance matrices into a DataFrame.
+    
+    Parameters
+    ----------
+    dicts : list
+        List of dictionaries containing systematic covariance matrices
+    cv_hist : np.ndarray
+        Central value histogram for normalization
+        
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with columns: key, category, unc
+    """
+    categories = ["GENIE", "Flux", "MCstat", "DetVar"]
+    
+    # Map categories to key extraction logic
+    key_extractors = {
+        "GENIE":  lambda key: key[32:],
+        "Flux":   lambda key: key[:-5],
+        "MCstat": lambda key: key,
+        "DetVar": lambda key: key[7:]
+    }
+    
+    records = []
+    
+    for d in dicts:
+        for key in d:
+            cov = d[key]['cov']
+            unc = np.sqrt(np.diag(cov)) / cv_hist
+            tot = np.sum(unc)/len(unc)
+
+            category = next((cat for cat in categories if cat in key), None)            
+            if category is None:
+                print(f"Warning: category not found for key '{key}'")
+                records.append({"key": key, "category": "Other", "unc": unc, 'sum': tot})
+            else:
+                extracted_key = key_extractors[category](key)
+                records.append({"key": extracted_key, "category": category, "unc": unc, 'sum': tot})
+    syst_df = pd.DataFrame(records).sort_values(['category','sum'],ascending=[False,False]) 
+    syst_df['top5'] = syst_df.groupby('category')['sum'].rank(method='first', ascending=False) <= 5
+    return syst_df
