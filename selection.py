@@ -1,4 +1,9 @@
+import sys; sys.path.append("/exp/sbnd/app/users/lynnt/cafpyana")
+from makedf.util import *
+from pyanalib.pandas_helpers import *
+
 import numpy as np
+from .utils import ensure_lexsorted
 
 def InSpill(df,spill_start=0.2, spill_end=2.2):
     return (df.slc.barycenterFM.flashTime > spill_start) & (df.slc.barycenterFM.flashTime < spill_end)
@@ -41,6 +46,7 @@ def select(indf,
            spill_start=0.2, 
            spill_end=2.2, 
            score_cut=0.02,
+           shower_scale=1.25,
            min_shower_energy=0.5,
            max_track_length=200,
            max_conversion_gap=2,
@@ -63,6 +69,8 @@ def select(indf,
         Maximum flash time for beam spill (default: 2.2)
     score_cut : float, optional
         Minimum flash matching score (default: 0.02)
+    shower_scale : float, optional
+        Scale factor for shower energy, reco->true (default: 1.25)
     min_shower_energy : float, optional
         Minimum primary shower energy in GeV (default: 0.5)
     max_track_length : float, optional
@@ -100,12 +108,9 @@ def select(indf,
     df_dict['flash matching'] = df
 
     # * require that primary shower > min_shower_energy
-    if spring:
-        df[('primshw','shw','reco_energy','','','')] = df.primshw.shw.maxplane_energy * 1.25
-        df = df[df.primshw.shw.maxplane_energy > min_shower_energy]
-    else:
-        df[('primshw','shw','reco_energy','','','')] = df.primshw.shw.bestplane_energy * 1.25
-        df = df[df.primshw.shw.bestplane_energy > min_shower_energy]
+    shower_var = ("primshw","shw","maxplane_energy") if spring else ("primshw","shw","bestplane_energy")
+    df = multicol_add(df,((ensure_lexsorted(df,axis=1)[shower_var])*shower_scale).rename(("primshw","shw","reco_energy")))
+    df = df[df.primshw.shw.reco_energy > min_shower_energy]
     df_dict['shower energy'] = df 
 
     # * require track length < max_track_length cm
