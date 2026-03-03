@@ -6,8 +6,6 @@ import sys; sys.path.append("/exp/sbnd/app/users/lynnt/cafpyana")
 from makedf.util import *
 from pyanalib.pandas_helpers import *
 
-n_max_concat=10
-
 # credit for first three functions to Mun! 
 def get_n_split(file):
     this_split_df = pd.read_hdf(file, key="split")
@@ -19,7 +17,7 @@ def print_keys(file):
         keys = store.keys()       # list of all keys in the file
         print("Keys:", keys)
         
-def load_dfs(file, keys2load):
+def load_dfs(file, keys2load,n_max_concat=10):
     out_df_dict = {}
     this_n_keys = get_n_split(file) 
     n_concat = min(n_max_concat, this_n_keys)
