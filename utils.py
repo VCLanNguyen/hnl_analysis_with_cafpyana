@@ -1,5 +1,6 @@
 import pandas as pd 
-from .constants import signal_dict
+from .constants import signal_dict, generic_dict
+from .selection import InRealisticFV
 
 import sys; sys.path.append("/exp/sbnd/app/users/lynnt/cafpyana")
 from makedf.util import *
@@ -52,14 +53,58 @@ def ensure_lexsorted(frame, axis):
         return frame.sort_index(axis=axis)
     return frame
 
+def get_hist1d(weights,data,bins): 
+    """1D histogram with overflow folded into last bin.
+    
+    Parameters
+    ----------
+    weights : np.ndarray
+        Per-event weights.
+    data : np.ndarray
+        Data values to histogram.
+    bins : np.ndarray
+        Bin edges. Values above bins[-1] are clipped to bins[-1] - 1e-10.
+    
+    Returns
+    -------
+    np.ndarray
+        Histogram counts of shape (len(bins)-1,).
+    """
+    clipped = np.clip(data, bins[0], bins[-1] - 1e-10)
+    return np.histogram(clipped, bins=bins, weights=weights)[0]
+
+def get_hist2d(weights,x, y, bins):
+    """2D histogram with overflow folded into last bin on both axes.
+    
+    Parameters
+    ----------
+    weights : np.ndarray
+        Per-event weights.
+    x : np.ndarray
+        X-axis data values.
+    y : np.ndarray
+        Y-axis data values.
+    bins : np.ndarray
+        Bin edges for both axes. Values above bins[-1] are clipped to bins[-1] - 1e-10.
+    
+    Returns
+    -------
+    np.ndarray
+        2D histogram counts of shape (len(bins)-1, len(bins)-1).
+    """
+    cy = np.clip(y, bins[0], bins[-1] - 1e-10)
+    cx = np.clip(x, bins[0], bins[-1] - 1e-10)
+    return np.histogram2d(cx, cy, bins=bins, weights=weights)[0]
+
 # helper functions for reproducing ccnue art filter logic
-def whereTPC(df):
-    xmax = 202.20000000000002
-    xmin = -202.20000000000002
-    ymax = 203.732262000002
-    ymin = -203.732262000002
-    zmax = 500#.09999999999997
-    zmin = 0
+# bounds obtained directly from geometry service for sbndcode v10_14_02_01
+def whereTPC(df,
+             xmin=-202.20000000000002,
+             xmax= 202.20000000000002,
+             ymin=-203.73225000000002,
+             ymax= 203.73225000000002,
+             zmin=0.0,
+             zmax=501.0):
     return (df.x > xmin) & (df.x < xmax) & (df.y > ymin) & (df.y < ymax) & (df.z > zmin) & (df.z < zmax)
 
 def ccnuefilt(df):
@@ -91,7 +136,7 @@ def define_signal(indf: pd.DataFrame,prefix=None):
     if prefix==None: mcdf = nudf
     else: mcdf = nudf[prefix]
 
-    whereFV = InFV(df=mcdf.position, inzback=0, det="SBND")
+    whereFV = InFV(df=mcdf.position, inzback=0, det="SBND") & InRealisticFV(df=mcdf.position)
     whereAV = InAV(df=mcdf.position)
     whereCCnue = ((mcdf.iscc==1)  # require CC interaction
                 & (abs(mcdf.pdg)==12)  # require neutrino to be a nue
@@ -112,6 +157,31 @@ def define_signal(indf: pd.DataFrame,prefix=None):
     
     nudf["signal"] = np.where(whereFV & whereCCnue, signal_dict["nueCC"], nudf["signal"])
     if ((nudf.signal < 0) | (nudf.signal >= len(signal_dict))).any(): 
+        print("Warning: unidentified signal/bacgkr channels present.")
+    indf["signal"] = nudf["signal"]
+    return indf
+
+def define_generic(indf: pd.DataFrame,prefix=None):
+    # sort by row 
+    indf = ensure_lexsorted(indf,0)
+    # sort by column make copy to preserve column ordering of original
+    nudf = ensure_lexsorted(indf.copy(),1)
+
+    if prefix==None: mcdf = nudf
+    else: mcdf = nudf[prefix]
+
+    whereFV = InFV(df=mcdf.position, inzback=0, det="SBND")
+    whereAV = InAV(df=mcdf.position)
+    
+    if "signal" not in nudf.columns: nudf["signal"] = -1    
+    # background
+    nudf["signal"] = np.where(whereAV == False, generic_dict["dirt"], nudf["signal"]) # dirt    
+    nudf["signal"] = np.where(whereAV, generic_dict["nonFV"], nudf['signal']) # nonFV
+    nudf["signal"] = np.where(whereFV & (mcdf.iscc==0), generic_dict["NCnu"], nudf["signal"])
+    nudf["signal"] = np.where(whereFV & (mcdf.iscc==1), generic_dict["CCnu"], nudf["signal"])
+    nudf["signal"] = np.where(np.isnan(mcdf.E), generic_dict['cosmic'], nudf["signal"])
+
+    if ((nudf.signal < 0) | (nudf.signal >= len(generic_dict))).any(): 
         print("Warning: unidentified signal/bacgkr channels present.")
     indf["signal"] = nudf["signal"]
     return indf
