@@ -1,45 +1,71 @@
-"""Histogram utilities with overflow handling."""
+"""
+Histogram utilities with overflow handling.
+
+Conventions
+-----------
+- Weights must be the first argument to automatically pass it into 
+  `np.apply_along_axis` for vectorizedsystematic uncertainty calculations.
+"""
 import numpy as np
 
-def get_hist1d(weights, data, bins): 
-    """1D histogram with overflow folded into last bin.
+def get_hist1d(weights=None, data=None, bins=None, overflow=True): 
+    """1D histogram with optional overflow handling.
     
     Parameters
     ----------
-    weights : np.ndarray
-        Per-event weights.
+    weights : np.ndarray, optional
+        Per-event weights. If None (default), uses uniform weights of 1.0 for all events.
     data : np.ndarray
         Data values to histogram.
     bins : np.ndarray
-        Bin edges. Values above bins[-1] are clipped to bins[-1] - 1e-10.
+        Bin edges.
+    overflow : bool, optional
+        If True (default), values above bins[-1] are clipped to bins[-1] - 1e-10
+        to fold overflow into the last bin. If False, uses standard numpy histogram
+        behavior with no clipping.
     
     Returns
     -------
     np.ndarray
         Histogram counts of shape (len(bins)-1,).
     """
-    clipped = np.clip(data, bins[0], bins[-1] - 1e-10)
-    return np.histogram(clipped, bins=bins, weights=weights)[0]
+    if weights is None:
+        weights = np.ones(len(data))
+    if overflow==True:
+        clipped = np.clip(data, bins[0], bins[-1] - 1e-10)
+        return np.histogram(clipped, bins=bins, weights=weights)[0]
+    else:
+        return np.histogram(data,bins=bins,weights=weights)[0]
 
-def get_hist2d(weights, x, y, bins):
-    """2D histogram with overflow folded into last bin on both axes.
+def get_hist2d(weights=None, x=None, y=None, bins=None, overflow=True):
+    """2D histogram with optional overflow handling on both axes.
     
     Parameters
     ----------
-    weights : np.ndarray
-        Per-event weights.
+    weights : np.ndarray, optional
+        Per-event weights. If None (default), uses uniform weights of 1.0 for all events.
     x : np.ndarray
         X-axis data values.
     y : np.ndarray
         Y-axis data values.
     bins : np.ndarray
-        Bin edges for both axes. Values above bins[-1] are clipped to bins[-1] - 1e-10.
+        Bin edges for both axes.
+    overflow : bool, optional
+        If True (default), values above bins[-1] are clipped to bins[-1] - 1e-10
+        on both axes to fold overflow into the last bin. If False, uses standard
+        numpy histogram behavior with no clipping.
     
     Returns
     -------
     np.ndarray
         2D histogram counts of shape (len(bins)-1, len(bins)-1).
     """
-    cy = np.clip(y, bins[0], bins[-1] - 1e-10)
-    cx = np.clip(x, bins[0], bins[-1] - 1e-10)
-    return np.histogram2d(cx, cy, bins=bins, weights=weights)[0]
+    if weights is None:
+        weights = np.ones(len(x))
+    if overflow==True:
+        cy = np.clip(y, bins[0], bins[-1] - 1e-10)
+        cx = np.clip(x, bins[0], bins[-1] - 1e-10)
+        return np.histogram2d(cx, cy, bins=bins, weights=weights)[0]
+    else: 
+        return np.histogram2d(x, y, bins=bins, weights=weights)[0]
+

@@ -146,6 +146,7 @@ def get_evtrate(indf,sigdf,sel_weights,sig_weights, var, var_true, var_sig,bins)
         per-universe response matrix and ``bkg_u`` is the weighted
         background histogram.
     """
+    sigdf = sigdf[sigdf.signal==0]  # ensure sigdf is signal-only
     signal_mask = indf.signal==0
     smearing = np.apply_along_axis(get_hist2d,0,
                                    sel_weights[signal_mask],
@@ -261,7 +262,7 @@ def get_syst(indf: pd.DataFrame,
 
     # get cv histogram
     cv_input = df[var]
-    cv_hist = np.histogram(cv_input,bins,weights=scaling)[0]
+    cv_hist = get_hist1d(data=cv_input,bins=bins,weights=scaling)
     cv_counts = np.sum(cv_hist)
 
     syst_dict = {}
@@ -425,12 +426,12 @@ def get_detvar_systs(detvar_dict,stage,var, bins,normalize=False,**kwargs):
         
         # lexsort to avoid performance warning on columns 
         # forward selection kwargs to select function
-        cv_hist = np.histogram(ensure_lexsorted(select(this_cv,**kwargs)[stage],axis=1)[var],bins=bins)[0]
+        cv_hist = get_hist1d(data=ensure_lexsorted(select(this_cv,savedict=False,stage=stage,**kwargs),axis=1)[var],bins=bins)
 
         # support both unisim (single df) and multisim (list of dfs)
         dv_dfs = this_dv if isinstance(this_dv, list) else [this_dv]
         dv_hists = np.column_stack([
-            np.histogram(ensure_lexsorted(select(dv,**kwargs)[stage],axis=1)[var],bins=bins)[0]
+            get_hist1d(data=ensure_lexsorted(select(dv,savedict=False,stage=stage,**kwargs),axis=1)[var],bins=bins)
             for dv in dv_dfs
         ])  # shape: (nbins, nuniv)
 

@@ -19,6 +19,7 @@ import warnings
 from .constants import signal_dict, signal_labels, pdg_dict, signal_colors, generic_dict, generic_labels, generic_colors
 from .utils import ensure_lexsorted
 from .syst import *
+from .histogram import *
 
 def plot_var(df: pd.DataFrame | list[pd.DataFrame],
              var: tuple | str,
@@ -37,7 +38,8 @@ def plot_var(df: pd.DataFrame | list[pd.DataFrame],
              pdg: bool = False,
              pdg_col: tuple | str = 'pfp_shw_truth_p_pdg',
              hatch: list[str] | None = None,
-             generic: bool = False) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+             generic: bool = False,
+             overflow: bool = True) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Plot a variable as stacked histograms for signal categories or PDG types.
 
     This function supports three modes controlled by ``pdg`` and ``generic``:
@@ -90,7 +92,11 @@ def plot_var(df: pd.DataFrame | list[pd.DataFrame],
         When True, stack by broad category (FV neutrino, non-FV, dirt, cosmic) using
         ``generic_dict`` / ``generic_labels`` / ``generic_colors``. Takes precedence
         over ``pdg`` if both are True.
-
+    overflow : bool, optional
+        If True (default), values above bins[-1] are clipped to bins[-1] - 1e-10
+        to fold overflow into the last bin. If False, uses standard numpy histogram
+        behavior with no clipping.
+    
     Returns
     -------
     bins, steps, total_err
@@ -131,7 +137,7 @@ def plot_var(df: pd.DataFrame | list[pd.DataFrame],
         for this_df, this_scale in zip(df,scale):
             for i, entry in enumerate(generic_dict):
                 this_signal_val = generic_dict[entry]
-                hist, _____ = np.histogram(this_df[this_df.signal==this_signal_val][var],bins=bins)
+                hist = get_hist1d(data=this_df[this_df.signal==this_signal_val][var],bins=bins, overflow=overflow)
                 stats[:,df_counter] += hist
                 hists[i] = hists[i] + this_scale*hist
             df_counter += 1
@@ -140,7 +146,7 @@ def plot_var(df: pd.DataFrame | list[pd.DataFrame],
         for this_df, this_scale in zip(df,scale):
             for i, entry in enumerate(signal_dict):
                 this_signal_val = signal_dict[entry]
-                hist, _____ = np.histogram(this_df[this_df.signal==this_signal_val][var],bins=bins)
+                hist = get_hist1d(data=this_df[this_df.signal==this_signal_val][var],bins=bins, overflow=overflow)
                 stats[:,df_counter] += hist
                 hists[i] = hists[i] + this_scale*hist
             df_counter += 1
@@ -156,7 +162,7 @@ def plot_var(df: pd.DataFrame | list[pd.DataFrame],
             for i, key in enumerate(list(pdg_dict.keys())):
                 pdg_value = pdg_dict[key]['pdg']
                 pdg_df = this_nu_df[abs(this_nu_df[pdg_col])==pdg_value].sort_index()
-                hist, _____ = np.histogram(pdg_df[var],bins=bins)
+                hist = get_hist1d(data=pdg_df[var],bins=bins, overflow=overflow)
                 stats[:,df_counter] += hist
                 hists[i] = hists[i] + this_scale*hist
                 # remove the "good pdg" from other_df
@@ -170,10 +176,10 @@ def plot_var(df: pd.DataFrame | list[pd.DataFrame],
             this_other = other_df[idx]
             this_cosmic = cosmic_df[idx]
             if len(this_other)!=0: 
-                hist, _____ = np.histogram(this_other[var],bins=bins)
+                hist = get_hist1d(data=this_other[var],bins=bins, overflow=overflow)
                 hists[-1] = hists[-1] + this_scale*hist
             if len(this_cosmic)!=0: 
-                hist, _____ = np.histogram(this_cosmic[var],bins=bins)
+                hist = get_hist1d(data=this_cosmic[var],bins=bins, overflow=overflow)
                 hists[-2] = hists[-2] + this_scale*hist 
     
     # ! THIS ASSUMES that the PDG of interest and the signal type of interest are both index 0
@@ -313,7 +319,8 @@ def data_plot_overlay(df: pd.DataFrame,
                       var: str | tuple,
                       bins: list[float] | np.ndarray,
                       ax = None,
-                      normalize: bool = False) -> tuple[np.ndarray, np.ndarray, object]:
+                      normalize: bool = False,
+                      overflow: bool = True) -> tuple[np.ndarray, np.ndarray, object]:
     """Overlay data as points with Poisson errors on an axis.
 
     Parameters
@@ -344,14 +351,14 @@ def data_plot_overlay(df: pd.DataFrame,
         df = ensure_lexsorted(df, axis=0)
         df = ensure_lexsorted(df, axis=1)
 
-    hist, edges = np.histogram(df[var], bins=bins)
+    hist = get_hist1d(data=df[var], bins=bins, overflow=overflow)
     errors = np.sqrt(hist)
     label = "data" 
     label += f" ({np.sum(hist,dtype=int):,})" if np.sum(hist) < 1e6 else f"({np.sum(hist):.2e}"
     
     if normalize:
         # Use actual bin widths for proper normalization
-        bin_widths = np.diff(edges)
+        bin_widths = np.diff(bins)
         # Normalize by bin width to get density, then by total integral
         hist_per_width = hist / bin_widths
         total_integral = np.sum(hist_per_width * bin_widths)
@@ -359,7 +366,7 @@ def data_plot_overlay(df: pd.DataFrame,
         hist = hist_per_width / total_integral
         errors = (errors / bin_widths) / total_integral
     
-    bin_centers = 0.5*(edges[1:] + edges[:-1])
+    bin_centers = 0.5*(bins[1:] + bins[:-1])
     plot = ax.errorbar(bin_centers, hist, yerr=errors, fmt='.',color='black',zorder=1e3,label=label)
     return hist, errors, plot
 
@@ -407,7 +414,7 @@ def plot_mc_data(mc_dfs: pd.DataFrame | list[pd.DataFrame],
     ax_main = fig.add_subplot(gs[0])
     ax_sub = fig.add_subplot(gs[1])
 
-    data_args = dict(df=data_df, var=var, bins=bins, ax=ax_main, normalize=kwargs.get('normalize', False))
+    data_args = dict(df=data_df, var=var, bins=bins, ax=ax_main, normalize=kwargs.get('normalize', False), overflow=kwargs.get('overflow',True))
     mc_args   = dict(df=mc_dfs, var=var, bins=bins, ax=ax_main, **kwargs)
 
     data_hist, data_err, data_plot = data_plot_overlay(**data_args)
