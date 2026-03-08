@@ -21,7 +21,7 @@ from .utils import ensure_lexsorted
 from .syst import *
 from .histogram import *
 
-def plot_var(df: pd.DataFrame | list[pd.DataFrame],
+def plot_var(df: pd.DataFrame,
              var: tuple | str,
              bins: np.ndarray,
              ax = None,
@@ -29,7 +29,7 @@ def plot_var(df: pd.DataFrame | list[pd.DataFrame],
              ylabel: str = "",
              title: str = "",
              counts: bool = False,
-             scale: float | list[float] | None = None,
+             scale: float = 1.0,
              normalize: bool = False,
              mult_factor: float = 1.0,
              cut_val: list[float] | None = None,
@@ -51,8 +51,8 @@ def plot_var(df: pd.DataFrame | list[pd.DataFrame],
 
     Parameters
     ----------
-    df : pandas.DataFrame or list[pandas.DataFrame]
-        Input dataframe(s). If a single DataFrame is provided it will be wrapped in a list.
+    df : pandas.DataFrame
+        Input dataframe.
     var : tuple | str
         Column name (or multi-index tuple) to histogram.
     bins : np.ndarray
@@ -67,9 +67,8 @@ def plot_var(df: pd.DataFrame | list[pd.DataFrame],
         Plot title. Defaults to the variable name when empty.
     counts : bool, default False
         If True, append event counts to legend labels.
-    scale : list[float], optional
-        Per-DataFrame scale factors. If None, all scales are 1.0. Length must equal number of
-        input DataFrames.
+    scale : float, default 1.0
+        Scale factor applied to the histogram.
     normalize : bool, default False
         If True, normalize histograms so integral equals 1 (uses bin widths from ``bins``).
     mult_factor : float, default 1.0
@@ -104,19 +103,12 @@ def plot_var(df: pd.DataFrame | list[pd.DataFrame],
         - steps: array of cumulative step values used for plotting (shape (n_categories, len(bins)))
         - total_err: combined stat + syst per bin (length = n_bins)
     """
-    if (type(df) is not list): df = [df]
-    if (type(scale)==float or type(scale)==np.float64): scale = [scale]
-    if scale == None: scale = list(np.ones(len(df)))
-    assert (len(scale) == len(df))
-    # Apply to each provided dataframe (both row-index and columns)
-    for ii, this_df in enumerate(df):
-        if isinstance(this_df, pd.DataFrame):
-            this_df = ensure_lexsorted(this_df, axis=0)
-            this_df = ensure_lexsorted(this_df, axis=1)
-            df[ii] = this_df
+    if isinstance(df, pd.DataFrame):
+        df = ensure_lexsorted(df, axis=0)
+        df = ensure_lexsorted(df, axis=1)
     
     weight = False
-    for col in df[0].columns:
+    for col in df.columns:
         if "weights_mc" in "".join(list(col)):
           weight=True
           break
@@ -127,80 +119,54 @@ def plot_var(df: pd.DataFrame | list[pd.DataFrame],
     if hatch == None: hatch = [""]*ncategories
     alpha = 0.25 if pdg else 0.4
     
-    bin_steps   = bins[1:]    
-    hists   = np.zeros((ncategories,len(bin_steps))) # this is for storing the histograms
-    steps   = np.zeros((ncategories,len(bins))) # this is for plotting
+    hists       = np.zeros((ncategories,len(bins)-1)) # this is for storing the histograms
+    steps       = np.zeros((ncategories,len(bins))) # this is for plotting
     
-    stats = np.zeros((len(bin_steps),len(df)))
-    stats_err   = np.zeros(len(bin_steps))
-    systs_err   = np.zeros(len(bin_steps))
+    stats       = np.zeros(len(bins)-1)
+    stats_err   = np.zeros(len(bins)-1)
+    systs_err   = np.zeros(len(bins)-1)
     
     # Check if systs is provided as array (already includes stats)
     systs_is_array = isinstance(systs, np.ndarray)
 
-    df_counter = 0
     if generic:
-        for this_df, this_scale in zip(df,scale):
-            for i, entry in enumerate(generic_dict):
-                this_signal_val = generic_dict[entry]
-
-                hist = get_hist1d(data=this_df[this_df.signal==this_signal_val][var],
-                                  weights=this_df[this_df.signal==this_signal_val]['weights_mc'] if weight else None,
+        for i, entry in enumerate(generic_dict):
+            this_signal_val = generic_dict[entry]
+            hists[i] = get_hist1d(data=df[df.signal==this_signal_val][var],
+                                  weights=df[df.signal==this_signal_val]['weights_mc'] if weight else None,
                                   bins=bins, overflow=overflow)
-                stats[:,df_counter] += hist
-                hists[i] = hists[i] + this_scale*hist
-            df_counter += 1
-
     elif pdg==False: 
-        for this_df, this_scale in zip(df,scale):
-            for i, entry in enumerate(signal_dict):
-                this_signal_val = signal_dict[entry]
-                hist = get_hist1d(data=this_df[this_df.signal==this_signal_val][var],
-                                  weights=this_df[this_df.signal==this_signal_val]['weights_mc'] if weight else None,
+        for i, entry in enumerate(signal_dict):
+            this_signal_val = signal_dict[entry]
+            hists[i] = get_hist1d(data=df[df.signal==this_signal_val][var],
+                                  weights=df[df.signal==this_signal_val]['weights_mc'] if weight else None,
                                   bins=bins, overflow=overflow)
-                stats[:,df_counter] += hist
-                hists[i] = hists[i] + this_scale*hist
-            df_counter += 1
 
     else: 
-        # other_df is going to store any particles that we don't specify the pdg of
-        other_df = []
-        cosmic_df = []
-        for this_df, this_scale in zip(df,scale):
-            this_other = this_df.copy().sort_index() # for storing anything left over 
-            this_nu_df = this_df[this_df.signal < signal_dict['cosmic']].sort_index()
-            this_cosmic_df =  this_df[this_df.signal == signal_dict['cosmic']].sort_index()
-            for i, key in enumerate(list(pdg_dict.keys())):
-                pdg_value = pdg_dict[key]['pdg']
-                pdg_df = this_nu_df[abs(this_nu_df[pdg_col])==pdg_value].sort_index()
-                hist = get_hist1d(data=pdg_df[var],
+        # other_df stores any particles that we don't specify the pdg of
+        this_other = df.copy().sort_index()
+        this_nu_df = df[df.signal < signal_dict['cosmic']].sort_index()
+        this_cosmic_df = df[df.signal == signal_dict['cosmic']].sort_index()
+        for i, key in enumerate(list(pdg_dict.keys())):
+            pdg_value = pdg_dict[key]['pdg']
+            pdg_df = this_nu_df[abs(this_nu_df[pdg_col])==pdg_value].sort_index()
+            hists[i] = get_hist1d(data=pdg_df[var],
                                   weights=pdg_df['weights_mc'] if weight else None,
                                   bins=bins, overflow=overflow)
-                stats[:,df_counter] += hist
-                hists[i] = hists[i] + this_scale*hist
-                # remove the "good pdg" from other_df
-                this_other = this_other[abs(this_other[pdg_col])!=pdg_value]
-            other_df.append(this_other)
-            cosmic_df.append(this_cosmic_df)
-            df_counter+=1
-        # scaling the special dfs (other, cosmic) given multiple input
-        for idx in range(len(other_df)):
-            this_scale = scale[idx]
-            this_other = other_df[idx]
-            this_cosmic = cosmic_df[idx]
-            if len(this_other)!=0: 
-                hist = get_hist1d(data=this_other[var],
-                                  weights=this_other['weights_mc'] if weight else None,
-                                  bins=bins, overflow=overflow)
-                hists[-1] = hists[-1] + this_scale*hist
-            if len(this_cosmic)!=0: 
-                hist = get_hist1d(data=this_cosmic[var],
-                                  weights=this_cosmic['weights_mc'] if weight else None,
-                                  bins=bins, overflow=overflow)
-                hists[-2] = hists[-2] + this_scale*hist 
+            # remove the "good pdg" from other_df
+            this_other = this_other[abs(this_other[pdg_col])!=pdg_value]
+        if len(this_other) != 0:
+            hists[-1] = get_hist1d(data=this_other[var],
+                                   weights=this_other['weights_mc'] if weight else None,
+                                   bins=bins, overflow=overflow)
+        if len(this_cosmic_df) != 0:
+            hists[-2] = get_hist1d(data=this_cosmic_df[var],
+                              weights=this_cosmic_df['weights_mc'] if weight else None,
+                              bins=bins, overflow=overflow)
     
     # ! THIS ASSUMES that the PDG of interest and the signal type of interest are both index 0
     # ! e.g. for nueCC (signal==0), e- is the first entry in the pdg_dict
+    hists    *= scale 
     hists[0] = mult_factor*hists[0]
 
     # storing the sum of each category in case we want to display it
@@ -209,7 +175,7 @@ def plot_var(df: pd.DataFrame | list[pd.DataFrame],
     # check if systematic cols are inside the df
     found_systs = False
     if (systs_is_array== False) and (systs==True):
-        for col in df[0].columns:
+        for col in df.columns:
             if "univ_" in "_".join(list(col)):
                 found_systs = True
                 break
@@ -221,7 +187,7 @@ def plot_var(df: pd.DataFrame | list[pd.DataFrame],
         syst_dict = {}
     elif (systs==True) & (found_systs): 
         # ! TODO now hardcoded for the first entry
-        syst_dict = get_syst(indf=df[0],var=var,bins=bins,scale=False)
+        syst_dict = get_syst(indf=df,var=var,bins=bins,scale=False)
         total_cov = np.zeros(len(bins)-1)
         for key in syst_dict.keys():
             total_cov += np.diag(syst_dict[key]['cov'])
@@ -235,13 +201,10 @@ def plot_var(df: pd.DataFrame | list[pd.DataFrame],
 
     # Only calculate statistical error if systs not provided as array
     if not systs_is_array:
-        for i in range(len(df)):
-            stats_err += np.sqrt(stats[:,i])*scale[i]
-    
+        stats_err = np.sqrt(stats) * scale
+
     # Systematic error calculation
-    for i in range(len(df)):
-        if i==0:
-            systs_err += systs_arr*scale[i]
+    systs_err = systs_arr * scale
 
     if normalize:
         # Use actual bin widths for proper normalization
@@ -387,7 +350,7 @@ def data_plot_overlay(df: pd.DataFrame,
     plot = ax.errorbar(bin_centers, hist, yerr=errors, fmt='.',color='black',zorder=1e3,label=label)
     return hist, errors, plot
 
-def plot_mc_data(mc_dfs: pd.DataFrame | list[pd.DataFrame],
+def plot_mc_data(mc_dfs: pd.DataFrame,
                  data_df: pd.DataFrame,
                  var: str | tuple,
                  bins: list[float] | np.ndarray,
@@ -401,8 +364,8 @@ def plot_mc_data(mc_dfs: pd.DataFrame | list[pd.DataFrame],
 
     Parameters
     ----------
-    mc_dfs : pandas.DataFrame or list[pandas.DataFrame]
-        MC dataframe(s) to be stacked. If a single DataFrame is provided it will be wrapped in a list.
+    mc_dfs : pandas.DataFrame
+        MC dataframe to be stacked.
     data_df : pandas.DataFrame
         Dataframe containing observed data to overlay as points with errors.
     var : str | tuple
