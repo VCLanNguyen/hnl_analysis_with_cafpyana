@@ -115,6 +115,8 @@ def plot_var(df: pd.DataFrame,
     
     colors = generic_colors if generic else signal_colors
     if ax is None: ax = plt.gca()
+    category_dict = generic_dict if generic else (pdg_dict if pdg else signal_dict)
+    category_labels = generic_labels if generic else signal_labels
     ncategories = len(generic_dict) if generic else (len(pdg_dict)+2 if pdg else len(signal_dict))
     if hatch == None: hatch = [""]*ncategories
     alpha = 0.25 if pdg else 0.4
@@ -129,19 +131,12 @@ def plot_var(df: pd.DataFrame,
     # Check if systs is provided as array (already includes stats)
     systs_is_array = isinstance(systs, np.ndarray)
 
-    if generic:
-        for i, entry in enumerate(generic_dict):
-            this_signal_val = generic_dict[entry]
-            hists[i] = get_hist1d(data=df[df.signal==this_signal_val][var],
-                                  weights=df[df.signal==this_signal_val]['weights_mc'] if weight else None,
+    if pdg==False: 
+        for i, entry in enumerate(category_dict):
+            this_cat = category_dict[entry]
+            hists[i] = get_hist1d(data=df[df.signal==this_cat][var],
+                                  weights=df[df.signal==this_cat]['weights_mc'] if weight else None,
                                   bins=bins, overflow=overflow)
-    elif pdg==False: 
-        for i, entry in enumerate(signal_dict):
-            this_signal_val = signal_dict[entry]
-            hists[i] = get_hist1d(data=df[df.signal==this_signal_val][var],
-                                  weights=df[df.signal==this_signal_val]['weights_mc'] if weight else None,
-                                  bins=bins, overflow=overflow)
-
     else: 
         # other_df stores any particles that we don't specify the pdg of
         this_other = df.copy().sort_index()
@@ -186,7 +181,6 @@ def plot_var(df: pd.DataFrame,
         systs_arr = systs
         syst_dict = {}
     elif (systs==True) & (found_systs): 
-        # ! TODO now hardcoded for the first entry
         syst_dict = get_syst(indf=df,var=var,bins=bins,scale=False)
         total_cov = np.zeros(len(bins)-1)
         for key in syst_dict.keys():
@@ -201,7 +195,15 @@ def plot_var(df: pd.DataFrame,
 
     # Only calculate statistical error if systs not provided as array
     if not systs_is_array:
-        stats_err = np.sqrt(stats) * scale
+        if weight==False:
+            stats_err = np.sqrt(stats) * scale
+        else:
+            unique_weights = df.weights_mc.unique()
+            for i in range(len(unique_weights)):
+                hist = get_hist1d(data=df[df.weights_mc == unique_weights[i]][var],
+                                  bins=bins,overflow=True)
+                stats_err += (hist * unique_weights[i]**2)
+            stats_err = np.sqrt(stats_err) * scale
 
     # Systematic error calculation
     systs_err = systs_arr * scale
@@ -220,7 +222,8 @@ def plot_var(df: pd.DataFrame,
         systs_err = (systs_err / bin_widths) / total_integral
         
     for i in range(ncategories):
-        plot_label = generic_labels[i] if generic else ((list(pdg_dict.keys())+['cosmic']+['other'])[i] if pdg else signal_labels[i])
+        if pdg: plot_label = (list(pdg_dict.keys())+['cosmic']+['other'])[i]
+        else: plot_label = category_labels[i]
         if (mult_factor!= 1.0) & (i==0): plot_label +=  f" [x{mult_factor}]"
         if counts: plot_label += f" ({int(hist_counts[i]):,})" if hist_counts[i] < 1e6 else f"({hist_counts[i]:.2e}"
         
