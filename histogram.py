@@ -60,11 +60,17 @@ def get_hist2d(weights=None, x=None, y=None, bins=None, overflow=True):
     np.ndarray
         2D histogram counts of shape (len(bins)-1, len(bins)-1).
     """
+    if type(bins) is list:
+        if len(bins) != 2:
+            raise ValueError("If bins is a list, it must contain exactly two arrays for x and y bin edges.")
+        x_bins, y_bins = bins
+    else:
+        x_bins = y_bins = bins
     if weights is None:
         weights = np.ones(len(x))
     if overflow==True:
-        cy = np.clip(y, bins[0], bins[-1] - 1e-10)
-        cx = np.clip(x, bins[0], bins[-1] - 1e-10)
+        cy = np.clip(y, x_bins[0], x_bins[-1] - 1e-10)
+        cx = np.clip(x, y_bins[0], y_bins[-1] - 1e-10)
         return np.histogram2d(cx, cy, bins=bins, weights=weights)[0]
     else: 
         return np.histogram2d(x, y, bins=bins, weights=weights)[0]
