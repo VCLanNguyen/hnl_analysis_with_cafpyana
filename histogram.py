@@ -8,7 +8,7 @@ Conventions
 """
 import numpy as np
 
-def get_hist1d(weights=None, data=None, bins=None, overflow=True): 
+def get_hist1d(weights=None, data=None, bins=None, overflow=True, **kwargs): 
     """1D histogram with optional overflow handling.
     
     Parameters
@@ -23,6 +23,8 @@ def get_hist1d(weights=None, data=None, bins=None, overflow=True):
         If True (default), values above bins[-1] are clipped to bins[-1] - 1e-10
         to fold overflow into the last bin. If False, uses standard numpy histogram
         behavior with no clipping.
+    **kwargs
+        Additional keyword arguments to pass to np.histogram().
     
     Returns
     -------
@@ -33,11 +35,11 @@ def get_hist1d(weights=None, data=None, bins=None, overflow=True):
         weights = np.ones(len(data))
     if overflow==True:
         clipped = np.clip(data, bins[0], bins[-1] - 1e-10)
-        return np.histogram(clipped, bins=bins, weights=weights)[0]
+        return np.histogram(clipped, bins=bins, weights=weights, **kwargs)[0]
     else:
-        return np.histogram(data,bins=bins,weights=weights)[0]
+        return np.histogram(data,bins=bins,weights=weights,**kwargs)[0]
 
-def get_hist2d(weights=None, x=None, y=None, bins=None, overflow=True):
+def get_hist2d(weights=None, x=None, y=None, bins=None, overflow=True, **kwargs):
     """2D histogram with optional overflow handling on both axes.
     
     Parameters
@@ -54,6 +56,8 @@ def get_hist2d(weights=None, x=None, y=None, bins=None, overflow=True):
         If True (default), values above bins[-1] are clipped to bins[-1] - 1e-10
         on both axes to fold overflow into the last bin. If False, uses standard
         numpy histogram behavior with no clipping.
+    **kwargs
+        Additional keyword arguments to pass to np.histogram2d().
     
     Returns
     -------
@@ -71,7 +75,7 @@ def get_hist2d(weights=None, x=None, y=None, bins=None, overflow=True):
     if overflow==True:
         cy = np.clip(y, x_bins[0], x_bins[-1] - 1e-10)
         cx = np.clip(x, y_bins[0], y_bins[-1] - 1e-10)
-        return np.histogram2d(cx, cy, bins=bins, weights=weights)[0]
+        return np.histogram2d(cx, cy, bins=bins, weights=weights, **kwargs)[0]
     else: 
-        return np.histogram2d(x, y, bins=bins, weights=weights)[0]
+        return np.histogram2d(x, y, bins=bins, weights=weights, **kwargs)[0]
 
