@@ -278,9 +278,10 @@ def plot_var(df: pd.DataFrame,
             pls_stats_err = steps[-1] + np.append(stats_err,stats_err[-1])
             ax.fill_between(bins, min_stats_err, pls_stats_err, **stats_options,label="MC stat.")
 
+    cut_line_zorder = ncategories + 2
     if cut_val != None:
         for i in range(len(cut_val)):
-            ax.axvline(cut_val[i],lw=2,color="gray",linestyle="--",zorder=6)
+            ax.axvline(cut_val[i],lw=2,color="gray",linestyle="--",zorder=cut_line_zorder)
     
     # Total error is just systs_err if array provided, otherwise stat + syst
     total_err = systs_err if systs_is_array else (stats_err + systs_err)
@@ -293,7 +294,8 @@ def plot_var(df: pd.DataFrame,
     default_legend_kwargs = {'ncol': 2, 'loc': 'upper right'}
     if legend_kwargs:
         default_legend_kwargs.update(legend_kwargs)
-    ax.legend(**default_legend_kwargs)
+    legend = ax.legend(**default_legend_kwargs)
+    legend.set_zorder(cut_line_zorder + 1)
 
     return bins, steps, total_err, syst_dict
 
@@ -352,7 +354,7 @@ def data_plot_overlay(df: pd.DataFrame,
     hist = get_hist1d(data=df[var], bins=bins, overflow=overflow)
     errors = np.sqrt(hist)
     label = "data" 
-    label += f" ({np.sum(hist,dtype=int):,})" if np.sum(hist) < 1e6 else f"({np.sum(hist):.2e}"
+    label += f" ({np.sum(hist,dtype=int):,})" if np.sum(hist) < 1e6 else f"({np.sum(hist):.2e})"
     
     if normalize:
         # Use actual bin widths for proper normalization
@@ -373,7 +375,6 @@ def plot_mc_data(mc_df: pd.DataFrame,
                  var: str | tuple,
                  bins: list[float] | np.ndarray,
                  figsize: tuple[int, int] = (7, 6),
-                 cut_val: list[float] = [],
                  ratio_min: float = 0.0,
                  ratio_max: float = 2.0,
                  savefig: str = "",
@@ -392,8 +393,6 @@ def plot_mc_data(mc_df: pd.DataFrame,
         Bin edges for the histograms.
     figsize : tuple, default (7, 6)
         Figure size.
-    cut_val : list, optional
-        x-values at which to draw vertical cut lines on both main and ratio axes.
     ratio_min, ratio_max : float, default (0.0, 2.0)
         y-limits for the ratio subplot.
     savefig : str, optional
@@ -449,10 +448,10 @@ def plot_mc_data(mc_df: pd.DataFrame,
     ax_sub.set_ylabel("Data/MC")
     ax_sub.legend(loc='upper center', bbox_to_anchor=(0.5, 1.5),
                   ncol=3,fontsize='small',frameon=False)
-    
-    if len(cut_val) > 0:
+    cut_val = kwargs.get('cut_val', None)
+    if cut_val is not None:
         for cut in cut_val:
-            ax_main.axvline(cut, color='black', linestyle='--', linewidth=2, alpha=0.5, zorder=1e2)
+            # ax_main.axvline(cut, color='black', linestyle='--', linewidth=2, alpha=0.5, zorder=1e2)
             ax_sub.axvline (cut, color='black', linestyle='--', linewidth=2, alpha=0.5, zorder=1e2)
     
     if savefig!="":
