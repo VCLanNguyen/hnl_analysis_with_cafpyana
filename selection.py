@@ -1,4 +1,4 @@
-import sys; sys.path.append("/exp/sbnd/app/users/lynnt/cafpyana")
+import sys; sys.path.append("/exp/sbnd/data/users/lnguyen/cafpyana_pi0/cafpyana")
 from makedf.util import *
 from pyanalib.pandas_helpers import *
 
