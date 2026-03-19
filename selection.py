@@ -212,8 +212,7 @@ def select_sideband(indf,
                 **kwargs)
     return df
 
-
-def define_signal(indf: pd.DataFrame, prefix=None):
+def define_ccnue_signal(indf: pd.DataFrame, prefix=None):
     """Define signal/background categories for neutrino interactions.
     
     Categorizes events into signal (CC nue) and various background categories
@@ -259,6 +258,57 @@ def define_signal(indf: pd.DataFrame, prefix=None):
     signal[np.isnan(mcdf.E)] = signal_dict['cosmic']
 
     signal[whereFV & whereCCnue] = signal_dict["nueCC"]
+    # preserve original column ordering
+    nudf.columns = original_col
+    nudf["signal"] = signal
+    if (signal < 0).any(): 
+        print("Warning: unidentified signal/background channels present.")
+    return nudf
+
+def define_pi0_signal(indf: pd.DataFrame, prefix=None):
+    """Define signal/background categories for neutrino interactions.
+    
+    Categorizes events into CC pi0, NC pi0, other CC numu, other NC, CC nue, non-FV, dirt, and cosmic categories
+    based on truth information and fiducial volume.
+    
+    Parameters
+    ----------
+    indf : pandas.DataFrame
+        Input DataFrame with MultiIndex columns containing truth information.
+    prefix : str or tuple, optional
+        Column prefix to access truth information. If None, uses top-level columns.
+    
+    Returns
+    -------
+    pandas.DataFrame
+        DataFrame with added 'signal' column indicating event category using signal_dict.
+    """
+    # Keep lexsorted axes for robust multi-index access without forcing a full copy.
+    original_col = indf.columns
+    nudf = ensure_lexsorted(ensure_lexsorted(indf, 0), 1)
+
+    if prefix is None:
+        mcdf = nudf
+    else:
+        mcdf = nudf[prefix]
+
+    whereFV = InFV(mcdf.position,det="SBND",inzback=0)
+    whereAV = InAV(df=mcdf.position)
+    whereCCPi0 = ((mcdf.iscc==1)  # require CC interaction
+                & (abs(mcdf.pdg)==14)  # require neutrino to be a numu
+                & (mcdf.npi0>0) # require at least one pi0
+                )
+    signal = np.full(len(nudf), -1, dtype=np.int16)
+    # background
+    signal[whereFV & (mcdf.iscc==0) & (mcdf.npi0 > 0)] = signal_dict["NCpi0"] # nc pi0 FV
+    signal[whereFV & (mcdf.iscc==1) & (abs(mcdf.pdg)==14) & (mcdf.npi0 == 0)] = signal_dict["othernumuCC"] # numu cc other FV
+    signal[whereFV & (mcdf.iscc==0) & (mcdf.npi0 == 0)] = signal_dict["otherNC"] # nc other FV
+    signal[whereFV & (mcdf.iscc==1) & (abs(mcdf.pdg)==12)] = signal_dict["CCnue"] # nue cc FV
+    signal[whereAV & (signal < 0)] = signal_dict["nonFV"] # nonFV
+    signal[whereAV == False] = signal_dict["dirt"] # dirt
+    signal[np.isnan(mcdf.E)] = signal_dict['cosmic']
+
+    signal[whereFV & whereCCPi0] = signal_dict["CCpi0"]
     # preserve original column ordering
     nudf.columns = original_col
     nudf["signal"] = signal
