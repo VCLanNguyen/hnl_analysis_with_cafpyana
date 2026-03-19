@@ -2,7 +2,17 @@
 import seaborn as sns
 import uproot
 # dictionary mapping signal to ints. Signal == 0 is assumed to be the desired topology. 
-signal_dict = {"nueCC":0,"numuCCpi0":1,"NCpi0":2,"othernumuCC":3,"othernueCC": 4,"otherNC":5, "nonFV":6 ,"dirt":7,"cosmic":8,"offbeam":9}
+signal_dict = {"nueCC":0,
+               "numuCCpi0":1,
+               "NCpi0":2,
+               "othernumuCC":3,
+               "othernueCC": 4,
+               "otherNC":5, 
+               "nonFV":6 ,
+               "dirt":7,
+               "cosmic":8,
+               "offbeam":9}
+
 signal_labels = [r"CC $\nu_e$",
                  r"CC $\nu_\mu\pi^0$",
                  r"NC$\nu$$\pi^0$",

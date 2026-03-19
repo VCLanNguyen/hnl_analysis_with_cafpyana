@@ -247,7 +247,7 @@ def plot_var(df: pd.DataFrame,
                          hatch=hatch[i],zorder=(ncategories-i),label=plot_label)
     
     if plot_err: 
-        systs_options = {"step":"pre", "color":mpl.colors.to_rgba("gray", alpha=0.8),
+        systs_options = {"step":"pre", "color":mpl.colors.to_rgba("gray", alpha=0.75),
                          "lw":0.0,"facecolor":"none","hatch":"xxx",
                          "zorder":ncategories+1}
         

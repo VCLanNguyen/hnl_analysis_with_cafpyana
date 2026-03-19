@@ -31,7 +31,7 @@ def print_keys(file):
         keys = store.keys()       # list of all keys in the file
         print("Keys:", keys)
         
-def load_dfs(file, keys2load, n_max_concat=10):
+def load_dfs(file, keys2load, n_max_concat=10, start_split=0):
     """Load DataFrames from split HDF5 file.
     
     Parameters
@@ -49,36 +49,12 @@ def load_dfs(file, keys2load, n_max_concat=10):
         Dictionary mapping key names to concatenated DataFrames.
     """
     out_df_dict = {}
-    this_n_keys = get_n_split(file) 
+    this_n_keys = get_n_split(file) - start_split
     n_concat = min(n_max_concat, this_n_keys)
     for key in keys2load:
         dfs = []  # collect all splits for this key
-        for i in range(n_concat):
+        for i in range(start_split, start_split + n_concat):
             this_df = pd.read_hdf(file, key=f"{key}_{i}")
             dfs.append(this_df)
         out_df_dict[key] = pd.concat(dfs, ignore_index=False)
     return out_df_dict
-
-def get_mcexposure_info(file_list):
-    """Calculate total MC exposure information from a list of files.
-    
-    Parameters
-    ----------
-    file_list : list
-        List of file paths to process.
-    
-    Returns
-    -------
-    tuple
-        (ngates, pot, nevents) - total number of gates, POT, and events.
-    """
-    ngates = 0
-    pot = 0
-    nevents = 0
-    for i, file in enumerate(file_list):
-        out_df = load_dfs(file, ["hdr"])
-        hdr_df = out_df["hdr"]
-        ngates += hdr_df.reset_index().drop_duplicates(subset=['run','subrun'])['ngenevt'].sum()
-        pot += hdr_df.reset_index().pot.sum()
-        nevents += len(hdr_df)
-    return ngates, pot, nevents
