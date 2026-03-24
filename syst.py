@@ -14,12 +14,29 @@ Conventions
 import numpy as np
 import pandas as pd
 import warnings
-from dataclasses import dataclass
 from tqdm import tqdm
 from .utils import ensure_lexsorted
 from .histogram import get_hist1d, get_hist2d
 from .selection import select
+from .classes import XSecInputs
 
+
+def _expand_weights(df, col, multisim_nuniv, scalars=None):
+        weights = df[col].values.astype(np.float64)
+        isnan = np.isnan(weights)
+
+        if scalars is None:
+            i_vals = np.arange(multisim_nuniv)
+            seed_strs = np.char.add(np.char.add("".join(list(col)), i_vals.astype(str)), str(id(df)))
+            seed_ints = np.fromiter((hash(s) % (2**32) for s in seed_strs), dtype=np.uint32, count=len(i_vals))
+            scalars = np.array([np.random.default_rng(int(s)).normal(0, 1) for s in seed_ints], dtype=np.float64)
+
+        # One random throw per universe (coherent across all events).
+        weights_mlt = 1 + (weights - 1)[:, np.newaxis] * scalars[np.newaxis, :]
+        weights_mlt = np.maximum(weights_mlt, 0)
+        weights_mlt[isnan, :] = 1.0  # reset NaN weights to 1.0
+        return weights_mlt
+    
 def is_xsec(col: tuple, xsec_inputs: XSecInputs | None) -> bool:
     """Check if event rate calculation should be used for cross-section systematics.
     
@@ -181,7 +198,9 @@ def get_syst_hists(reco_df: pd.DataFrame,
                    bins: np.ndarray,
                    scale: bool = True,
                    normalize: bool = False,
-                   xsec_inputs: XSecInputs | None = None) -> tuple[dict, np.ndarray]:
+                   xsec_inputs: XSecInputs | None = None,
+                   expand:bool=False,
+                   multisim_nuniv=100) -> tuple[dict, np.ndarray]:
     """Compute only systematic universe histograms (no covariance/correlation matrices).
 
     Returns
@@ -207,6 +226,8 @@ def get_syst_hists(reco_df: pd.DataFrame,
 
     scaling = np.ones(reco_df.shape[0])
     for col in reco_df.columns:
+        if "Geant4" in "".join(list(col)):
+            continue
         if ("flux_pot_norm" in col) and scale:
             scaling = reco_df[col].values
         if "morph" in col:
@@ -226,42 +247,65 @@ def get_syst_hists(reco_df: pd.DataFrame,
     nbins = len(bins)
     syst_dict = {}
 
-    # unisim
-    for col in tqdm(unisim_col, desc='Running through unisims'):
-        weights = reco_df[col].values.astype(np.float64)
-        weights[np.isnan(weights)] = 1.0
-        weights *= scaling
+    if expand:
+        # use morph and ps1 as 1-sigma variations to create multisim universes with random throws
+        for col in tqdm(unisim_col+multisig_col, desc='Running through unisims'):
+            i_vals = np.arange(multisim_nuniv)
+            seed_strs = np.char.add(np.char.add("".join(list(col)), i_vals.astype(str)), str(id(reco_df)))
+            seed_ints = np.fromiter((hash(s) % (2**32) for s in seed_strs), dtype=np.uint32, count=len(i_vals))
+            scalars = np.array([np.random.default_rng(int(s)).normal(0, 1) for s in seed_ints], dtype=np.float64)
 
-        if is_xsec(col, xsec_inputs):
-            true_signal_weights = xsec_inputs.true_signal_df[col[2:]].values.astype(np.float64) * xsec_inputs.true_signal_scale
-            hists = get_xsec_hists(reco_df, xsec_inputs,
-                                   weights.reshape(-1, 1),
-                                   true_signal_weights.reshape(-1, 1),
-                                   bins,
-                                   reco_var)
-        else:
-            hists = np.apply_along_axis(get_hist1d, 0, weights, reco_df[reco_var], bins).reshape((nbins - 1, -1))
+            weights_mlt = _expand_weights(reco_df, col, multisim_nuniv, scalars=scalars)
+            weights_mlt *= scaling[:, np.newaxis]
+            if is_xsec(col, xsec_inputs):
+                true_weights_mlt = _expand_weights(
+                    xsec_inputs.true_signal_df,
+                    col[2:],
+                    multisim_nuniv,
+                    scalars=scalars,
+                ) * xsec_inputs.true_signal_scale
+                hists = get_xsec_hists(reco_df, xsec_inputs, weights_mlt, true_weights_mlt, bins, reco_var)
+            else:
+                hists = np.apply_along_axis(get_hist1d, 0, weights_mlt, reco_df[reco_var], bins)
 
-        syst_dict[col[2]] = {'hists': hists}
+            syst_dict[col[2]] = {'hists': hists}
+    else: 
+        # unisim
+        for col in tqdm(unisim_col, desc='Running through unisims'):
+            weights = reco_df[col].values.astype(np.float64)
+            weights[np.isnan(weights)] = 1.0
+            weights *= scaling
 
-    # multisig (ps1/ms1 pairs)
-    for col in tqdm(multisig_col, desc='Running through multisig'):
-        ps1_col = col
-        ms1_col = tuple([x if x != "ps1" else "ms1" for x in list(col)])
+            if is_xsec(col, xsec_inputs):
+                true_signal_weights = xsec_inputs.true_signal_df[col[2:]].values.astype(np.float64) * xsec_inputs.true_signal_scale
+                hists = get_xsec_hists(reco_df, xsec_inputs,
+                                    weights.reshape(-1, 1),
+                                    true_signal_weights.reshape(-1, 1),
+                                    bins,
+                                    reco_var)
+            else:
+                hists = np.apply_along_axis(get_hist1d, 0, weights, reco_df[reco_var], bins).reshape((nbins - 1, -1))
 
-        ps1 = np.nan_to_num(reco_df[ps1_col].values.astype(np.float64), copy=False, nan=1.0)
-        ms1 = np.nan_to_num(reco_df[ms1_col].values.astype(np.float64), copy=False, nan=1.0)
-        weights = np.stack([ps1, ms1]).T * scaling[:, np.newaxis]
+            syst_dict[col[2]] = {'hists': hists}
 
-        if is_xsec(col, xsec_inputs):
-            true_signal_ps1 = np.nan_to_num(xsec_inputs.true_signal_df[ps1_col[2:]].values.astype(np.float64), copy=False, nan=1.0)
-            true_signal_ms1 = np.nan_to_num(xsec_inputs.true_signal_df[ms1_col[2:]].values.astype(np.float64), copy=False, nan=1.0)
-            true_signal_weights = np.stack([true_signal_ps1, true_signal_ms1]).T * xsec_inputs.true_signal_scale
-            hists = get_xsec_hists(reco_df, xsec_inputs, weights, true_signal_weights, bins, reco_var)
-        else:
-            hists = np.apply_along_axis(get_hist1d, 0, weights, reco_df[reco_var], bins)
+        # multisig (ps1/ms1 pairs)
+        for col in tqdm(multisig_col, desc='Running through multisig'):
+            ps1_col = col
+            ms1_col = tuple([x if x != "ps1" else "ms1" for x in list(col)])
 
-        syst_dict[col[2]] = {'hists': hists}
+            ps1 = np.nan_to_num(reco_df[ps1_col].values.astype(np.float64), copy=False, nan=1.0)
+            ms1 = np.nan_to_num(reco_df[ms1_col].values.astype(np.float64), copy=False, nan=1.0)
+            weights = np.stack([ps1, ms1]).T * scaling[:, np.newaxis]
+
+            if is_xsec(col, xsec_inputs):
+                true_signal_ps1 = np.nan_to_num(xsec_inputs.true_signal_df[ps1_col[2:]].values.astype(np.float64), copy=False, nan=1.0)
+                true_signal_ms1 = np.nan_to_num(xsec_inputs.true_signal_df[ms1_col[2:]].values.astype(np.float64), copy=False, nan=1.0)
+                true_signal_weights = np.stack([true_signal_ps1, true_signal_ms1]).T * xsec_inputs.true_signal_scale
+                hists = get_xsec_hists(reco_df, xsec_inputs, weights, true_signal_weights, bins, reco_var)
+            else:
+                hists = np.apply_along_axis(get_hist1d, 0, weights, reco_df[reco_var], bins)
+
+            syst_dict[col[2]] = {'hists': hists}
 
     # multisim
     for col in tqdm(multisim_col, desc='Running through multisims'):
