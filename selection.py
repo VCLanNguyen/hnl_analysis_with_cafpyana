@@ -22,7 +22,7 @@ def select(indf,
            spill_start=0.2, 
            spill_end=2.2, 
            score_cut=0.02,
-           shower_scale=1.25,
+           shower_scale=1.17,
            min_shower_energy=0.5,
            max_track_length=200,
            min_conversion_gap=0.001,
@@ -111,12 +111,6 @@ def select(indf,
 
     shower_var = ("primshw","shw","maxplane_energy") if spring else ("primshw","shw","bestplane_energy")
     add_col = True
-    # for col in df.columns:
-    #     if "reco_energy" in "_".join(list(col)):
-    #         add_col = False
-    #         break
-    # if add_col: 
-    #     df = multicol_add(df,((ensure_lexsorted(df,axis=1)[shower_var])*shower_scale).rename(("primshw","shw","reco_energy")))
     df[("primshw","shw","reco_energy",'','','')] = ensure_lexsorted(df,axis=1)[shower_var]*shower_scale
     # ** these cuts done already in makedf
     # * require nuscore > 0.5
