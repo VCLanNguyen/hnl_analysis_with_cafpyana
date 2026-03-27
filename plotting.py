@@ -41,6 +41,8 @@ def plot_var(df: pd.DataFrame,
              hatch: list[str] | None = None,
              generic: bool = False,
              overflow: bool = True,
+             hist_filled: bool = True,
+             error_legend: bool = True,
              legend_kwargs: dict | None = None,
              
              ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -99,6 +101,10 @@ def plot_var(df: pd.DataFrame,
         If True (default), values above bins[-1] are clipped to bins[-1] - 1e-10
         to fold overflow into the last bin. If False, uses standard numpy histogram
         behavior with no clipping.
+    hist_filled : bool, default True
+        If True, use filled histograms. If False, use step histograms with no fill.
+    error_legend : bool, default True
+        If True, include a legend entry of MC stat./syst. uncertainties when ``plot_err`` is True.
     legend_kwargs : dict, optional
         Dictionary of keyword arguments to pass to ax.legend(). These will override
         the default legend settings (ncol=2, loc='upper right').
@@ -239,12 +245,19 @@ def plot_var(df: pd.DataFrame,
         if percents: plot_label += f" ({hist_counts[i]/np.sum(hist_counts)*100:.1f}%)"
         bottom=steps[i-1] if i>0 else 0
         # steps needs the first entry to be repeated!
-        steps[i] = np.insert(hists[i],obj=0,values=hists[i][0]) + bottom; 
-        ax.fill_between(bins, bottom, steps[i], step="pre", 
-                         facecolor=mpl.colors.to_rgba(color,alpha),
-                         edgecolor=mpl.colors.to_rgba(color,1.0),  
-                         lw=1.5, 
-                         hatch=hatch[i],zorder=(ncategories-i),label=plot_label)
+        steps[i] = np.insert(hists[i],obj=0,values=hists[i][0]) + bottom;
+
+        #if zero contribution to histogram don't plot
+        if hist_counts[i] == 0: continue
+
+        if hist_filled:
+            ax.fill_between(bins, bottom, steps[i], step="pre", 
+                             facecolor=mpl.colors.to_rgba(color,alpha),
+                             edgecolor=mpl.colors.to_rgba(color,1.0),  
+                             lw=1.5, 
+                             hatch=hatch[i],zorder=(ncategories-i),label=plot_label)
+        else:
+            ax.step(bins, steps[i], where="pre", color=color, lw=1.5, label=plot_label, zorder=(ncategories-i))
     
     if plot_err: 
         systs_options = {"step":"pre", "color":mpl.colors.to_rgba("gray", alpha=0.75),
@@ -256,7 +269,8 @@ def plot_var(df: pd.DataFrame,
             # systs array already includes both stat + syst
             min_total_err = steps[-1] - np.append(systs_err[0], systs_err)
             pls_total_err = steps[-1] + np.append(systs_err[0], systs_err)
-            ax.fill_between(bins, min_total_err, pls_total_err, **systs_options, label="MC stat.+syst.")
+            pltlabel = "MC stat.+syst." if error_legend else ""
+            ax.fill_between(bins, min_total_err, pls_total_err, **systs_options, label=pltlabel)
         elif found_systs:
             # Separate stat and syst bands
             stats_options = {"step":"pre", "color":mpl.colors.to_rgba("gray", alpha=0.9),
@@ -266,8 +280,10 @@ def plot_var(df: pd.DataFrame,
             pls_systs_err = steps[-1]     + np.append(systs_err[0],systs_err)
             min_stats_err = min_systs_err - np.append(stats_err[0],stats_err)
             pls_stats_err = pls_systs_err + np.append(stats_err[0],stats_err)
-            ax.fill_between(bins, min_systs_err, pls_systs_err, **systs_options,label="MC syst.")
-            ax.fill_between(bins, min_systs_err, min_stats_err, **stats_options,label="MC stat.")
+            pltlabel = "MC syst" if error_legend else ""
+            ax.fill_between(bins, min_systs_err, pls_systs_err, **systs_options,label=pltlabel)
+            pltlabel = "MC stat" if error_legend else ""
+            ax.fill_between(bins, min_systs_err, min_stats_err, **stats_options,label=pltlabel)
             ax.fill_between(bins, pls_systs_err, pls_stats_err, **stats_options)
         else: 
             # Only stat errors
@@ -276,7 +292,8 @@ def plot_var(df: pd.DataFrame,
                              "zorder":ncategories+1}
             min_stats_err = steps[-1] - np.append(stats_err,stats_err[-1])
             pls_stats_err = steps[-1] + np.append(stats_err,stats_err[-1])
-            ax.fill_between(bins, min_stats_err, pls_stats_err, **stats_options,label="MC stat.")
+            pltlabel = "MC stat." if error_legend else ""
+            ax.fill_between(bins, min_stats_err, pls_stats_err, **stats_options,label=pltlabel)
 
     cut_line_zorder = ncategories + 2
     if cut_val != None:
@@ -416,6 +433,107 @@ def plot_mc_data(mc_df: pd.DataFrame,
 
     data_hist, data_err, data_plot = data_plot_overlay(**data_args)
     mc_bins, mc_steps, mc_err, mc_dict = plot_var(**mc_args)
+    
+    xmin, xmax = ax_main.get_xlim()
+    
+    # plot the ratio
+    mc_tot = mc_steps[-1][1:]  # last step contains the total MC counts
+    fig.canvas.draw()
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore",message="invalid value encountered in divide")
+        # ratio is (data bin content) / (mc bin content)
+        ratio = data_hist / mc_tot
+        # error in ratio is just (data error) / (mc bin content)
+        ratio_err = data_err / mc_tot
+        # error in shading should just be (mc error) / (mc bin content)
+        mc_contribution = mc_err/mc_tot
+        # shading is around unity    
+        ps_err = 1 + np.append(mc_contribution[0],mc_contribution)
+        ms_err = 1 - np.append(mc_contribution[0],mc_contribution)
+        
+    bin_centers = 0.5 * (mc_bins[1:] + mc_bins[:-1])
+    nbins = len(bins)-1
+    
+    ax_sub.errorbar(bin_centers, ratio, yerr=ratio_err, fmt='s', markersize=3,color='black', zorder=1e3, label='data/MC ratio')
+    # fill_between needs last entry to be repeated 
+    ax_sub.fill_between(mc_bins,ms_err, ps_err, step="pre", color=mpl.colors.to_rgba("gray", alpha=0.4), lw=0.0, label='MC err.')
+    
+    ax_sub.axhline(1, color='red', linestyle='--', linewidth=1, zorder=0,label="y=1.0")
+    ax_sub.set_xlim(xmin, xmax)
+    ax_sub.set_ylim(ratio_min, ratio_max)
+    ax_sub.set_ylabel("Data/MC")
+    ax_sub.legend(loc='upper center', bbox_to_anchor=(0.5, 1.5),
+                  ncol=3,fontsize='small',frameon=False)
+    cut_val = kwargs.get('cut_val', None)
+    if cut_val is not None:
+        for cut in cut_val:
+            # ax_main.axvline(cut, color='black', linestyle='--', linewidth=2, alpha=0.5, zorder=1e2)
+            ax_sub.axvline (cut, color='black', linestyle='--', linewidth=2, alpha=0.5, zorder=1e2)
+    
+    if savefig!="":
+        plt.savefig(savefig,bbox_inches='tight')
+    
+    return fig, ax_main, ax_sub, mc_dict
+
+
+def plot_mc_hnl_data(mc_df: pd.DataFrame,
+                 hnl_df: pd.DataFrame,
+                 data_df: pd.DataFrame,
+                 var: str | tuple,
+                 bins: list[float] | np.ndarray,
+                 figsize: tuple[int, int] = (7, 6),
+                 ratio_min: float = 0.0,
+                 ratio_max: float = 2.0,
+                 savefig: str = "",
+                 scale_nu: float = 1.0,
+                 scale_hnl: float = 1.0,
+                 **kwargs) -> tuple[plt.Figure, plt.Axes, plt.Axes]:
+    """Create a combined MC stack filled histogram + HNL step histogram + data overlay plot with data/MC ratio subplot.
+
+    Parameters
+    ----------
+    mc_df : pandas.DataFrame
+        MC dataframe to be stacked.
+    hnl_df : pandas.DataFrame
+        HNL dataframe to be overlaid as a step histogram.
+    data_df : pandas.DataFrame
+        Dataframe containing observed data to overlay as points with errors.
+    var : str | tuple
+        Column (or multi-index tuple) to histogram.
+    bins : array-like
+        Bin edges for the histograms.
+    figsize : tuple, default (7, 6)
+        Figure size.
+    ratio_min, ratio_max : float, default (0.0, 2.0)
+        y-limits for the ratio subplot.
+    savefig : str, optional
+        If provided, path where the figure will be saved (bbox_inches='tight').
+    scale_nu : float, default 1.0
+        Scale factor for neutrino MC.
+    scale_hnl : float, default 1.0
+        Scale factor for HNL MC.
+    **kwargs
+        All other arguments (scale, pdg, pdg_col, xlabel, ylabel, title, counts, normalize,
+        systs, hatch, etc.) are forwarded to :func:`plot_var`.
+
+    Returns
+    -------
+    fig, ax_main, ax_sub
+        The created matplotlib Figure and the main and ratio Axes.
+    """
+    fig = plt.figure(figsize=figsize)
+    gs = GridSpec(2, 1, height_ratios=[6, 1], hspace=0.4)
+    ax_main = fig.add_subplot(gs[0])
+    ax_sub = fig.add_subplot(gs[1])
+
+    data_args = dict(df=data_df, var=var, bins=bins, ax=ax_main, normalize=kwargs.get('normalize', False), overflow=kwargs.get('overflow',True))
+    mc_args   = dict(df=mc_df, var=var, bins=bins, ax=ax_main, hist_filled=True, error_legend=False, scale = scale_nu, **kwargs)
+    hnl_args = dict(df=hnl_df, var=var, bins=bins, ax=ax_main, hist_filled=False, error_legend=True, scale = scale_hnl, **kwargs)
+
+    data_hist, data_err, data_plot = data_plot_overlay(**data_args)
+    mc_bins, mc_steps, mc_err, mc_dict = plot_var(**mc_args)
+    hnl_bins, hnl_steps, hnl_err, hnl_dict = plot_var(**hnl_args)
     
     xmin, xmax = ax_main.get_xlim()
     
