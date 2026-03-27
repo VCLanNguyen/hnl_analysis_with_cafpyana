@@ -5,6 +5,8 @@ import warnings
 import pickle
 from tqdm import tqdm
 from .utils import ensure_lexsorted
+from .io import load_dfs
+from .selection import select
 from .histogram import get_hist1d, get_hist2d
 from .syst import *
 from .classes import SystematicsOutput, XSecInputs
@@ -278,6 +280,47 @@ def add_unisim_uncertainty(
         sum_value=float(np.mean(unc)),
     )
 
+def get_intime_hist(selected_df, var, bins, 
+                    mcbnb_ngen,
+                    mcbnb_pot,
+                    threshold = 0.05,
+                    intime_file="/scratch/7DayLifetime/lynnt/MCP2025B_v10_06_00_09/intime.df",
+                    **selection_kwargs):
+    mcint_dfs = load_dfs(intime_file,['histgenevtdf','nuecc'])
+    scale = mcbnb_ngen/mcint_dfs['histgenevtdf'].TotalGenEvents.sum()
+    mcint_df = select(mcint_dfs['nuecc'],savedict=False,**selection_kwargs)
+    mcint_df[('weights_mc', '', '', '', '', '')] = scale
+    mcint_df[('flux_pot_norm', '', '', '', '', '')] = mcint_df.weights_mc/(integrated_flux * (mcbnb_pot / 1e6))
+    # sort to avoid performance warning
+    selected_df = ensure_lexsorted(selected_df,axis=1)
+    mcint_df = ensure_lexsorted(mcint_df,axis=1)
+    
+    cv_hist = get_hist1d(data=selected_df[var], bins=bins, 
+                             weights=selected_df.flux_pot_norm)
+    # remove offbeam contribution
+    selected_no_offbeam_df = selected_df[selected_df.signal!=signal_dict['offbeam']]
+    cv_hist_removed = get_hist1d(data = selected_no_offbeam_df[var],
+                                     bins=bins, 
+                                     weights = selected_no_offbeam_df.flux_pot_norm)
+    
+    # add the intime contribution
+    int_hist = get_hist1d(data=mcint_df[var], bins=bins,
+                              weights=mcint_df.flux_pot_norm)
+    dv_hist = cv_hist_removed + int_hist
+
+    matrices = calc_matrices(dv_hist.reshape(len(bins)-1,-1),cv_hist)
+    cov = matrices[0]
+    unc = np.sqrt(np.diag(cov))/cv_hist
+    
+    # if the uncertainty is large enough, keep it for that bin
+    # otherwise, we use the largest non-large uncertainty as a uniform uncertainty for all 
+    large_unc = unc > threshold
+    uniform_unc_val = np.max(unc[~large_unc])
+    unc_final = np.where(large_unc, unc, uniform_unc_val)
+    # apply fully correlated uncertainty
+    cov_final = np.outer(unc_final*cv_hist, unc_final*cv_hist)
+    return cov_final
+    
 def get_total_cov(reco_df, reco_var, bins, mcbnb_pot,
                   normalize=False, selection_kwargs=None, projected_pot=1e20, 
                   xsec_inputs: XSecInputs | None = None):
@@ -326,12 +369,26 @@ def get_total_cov(reco_df, reco_var, bins, mcbnb_pot,
     data_unc = np.divide(data_err, flux_scale * cv_hist, out=np.zeros_like(data_err, dtype=float), where=cv_hist > 0)
     data_syst_df = pd.DataFrame({'key': ['Datastat'], 'category': ['Datastat'], 'unc': [data_unc], 'sum': [np.mean(data_unc)], 'top5': [False]})
     
-    offbeam_mask = sorted_df.signal == signal_dict['offbeam']
-    offbeam_hist = get_hist1d(data=sorted_df[offbeam_mask][reco_var], weights=sorted_df[offbeam_mask].flux_pot_norm, bins=bins)
-    offbeam_cov  = np.diag(offbeam_hist)
+    # add flat uncertainty for POT normalization (fully correlated across bins)
+    pot_norm_unc = 0.02  # 2% uncertainty on POT normalization
+    pot_cov = (pot_norm_unc ** 2) * np.outer(cv_hist, cv_hist)
+    pot_syst_df = pd.DataFrame({'key': ['BeamExposure'], 'category': ['BeamExposure'], 'unc': [np.full_like(cv_hist, pot_norm_unc)], 'sum': [pot_norm_unc], 'top5': [False]})
+    # add flat uncertainty for NTargets (normalization uncertainty, fully correlated across bins)
+    ntargets_unc = 0.01  # 2% uncertainty on NTargets
+    ntargets_cov = (ntargets_unc ** 2) * np.outer(cv_hist, cv_hist)
+    ntargets_syst_df = pd.DataFrame({'key': ['NTargets'], 'category': ['NTargets'], 'unc': [np.full_like(cv_hist, ntargets_unc)], 'sum': [ntargets_unc], 'top5': [False]})
 
-    rate_syst_df = pd.concat([rate_syst_df, data_syst_df], ignore_index=True)
-    rate_cov = _sum_covariances([rate_syst_dict, detv_syst_dict], len(bins))
+    norm_syst_dict = {
+        'BeamExposure': {'cov': pot_cov, 
+                         'cov_frac': get_fractional_covariance(pot_cov, cv_hist), 
+                         'corr': get_corr_from_cov(pot_cov)},
+        'NTargets': {'cov': ntargets_cov, 
+                     'cov_frac': get_fractional_covariance(ntargets_cov, cv_hist), 
+                     'corr': get_corr_from_cov(ntargets_cov)},
+    }
+
+    rate_syst_df = pd.concat([rate_syst_df, data_syst_df, pot_syst_df, ntargets_syst_df], ignore_index=True)
+    rate_cov = _sum_covariances([rate_syst_dict, detv_syst_dict, norm_syst_dict], len(bins))
 
     if xsec_inputs is None:
         return SystematicsOutput(
@@ -350,8 +407,8 @@ def get_total_cov(reco_df, reco_var, bins, mcbnb_pot,
     )
     xsec_total_syst_dict = {**xsec_syst_dict, **detv_syst_dict}
     xsec_syst_df = get_syst_df([xsec_syst_dict, detv_syst_dict], cv_hist)
-    xsec_syst_df = pd.concat([xsec_syst_df, data_syst_df], ignore_index=True)
-    xsec_cov = _sum_covariances([xsec_syst_dict, detv_syst_dict], len(bins))
+    xsec_syst_df = pd.concat([xsec_syst_df, data_syst_df,pot_syst_df,ntargets_syst_df], ignore_index=True)
+    xsec_cov = _sum_covariances([xsec_syst_dict, detv_syst_dict,norm_syst_dict], len(bins))
     
     return SystematicsOutput(
         hist_cv=cv_hist,
