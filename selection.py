@@ -17,7 +17,7 @@ def InScore(df,score_cut=0.02):
 def select(indf,
            stage = None,
            savedict = True,
-           spring=False,
+           spring=True,
            realisticFV=True,
            spill_start=0.2, 
            spill_end=2.2, 
@@ -100,6 +100,10 @@ def select(indf,
 
     df_dict = {}
     df = indf.copy()
+    if spring:
+        df[("primshw","shw","reco_energy",'','','')] = df.primshw.shw.maxplane_energy*shower_scale
+    else:
+        df[("primshw","shw","reco_energy",'','','')] = df.primshw.shw.bestplane_energy*shower_scale
     
     def save_stage(stage_name, current_df):
         """Save stage to dict if savedict=True and early return if at target stage."""
@@ -108,10 +112,6 @@ def select(indf,
         if stage == stage_name:
             return df_dict if savedict else current_df
         return None
-
-    shower_var = ("primshw","shw","maxplane_energy") if spring else ("primshw","shw","bestplane_energy")
-    add_col = True
-    df[("primshw","shw","reco_energy",'','','')] = ensure_lexsorted(df,axis=1)[shower_var]*shower_scale
     # ** these cuts done already in makedf
     # * require nuscore > 0.5
     # * require not clear cosmic 
@@ -119,6 +119,7 @@ def select(indf,
     # * require that there is a primary shower (at least one pfp w/ trackScore < 0.5)
     if realisticFV:
         df = df[(InFV(df.slc.vertex,det="SBND_nohighyz",inzback=0))]
+    df = df[df.slc.barycenterFM.flashPEs > 2e3]
     df = df[df.slc.nu_score>0.5]
     result = save_stage('preselection', df)
     if result is not None: return result
