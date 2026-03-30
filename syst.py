@@ -17,9 +17,26 @@ import warnings
 from tqdm import tqdm
 from .utils import ensure_lexsorted
 from .histogram import get_hist1d, get_hist2d
-from .selection import select
+from .selection import select, define_signal
 from .classes import XSecInputs
 from .constants import integrated_flux
+
+
+def _normalize_event_mask(event_mask: str | None) -> str:
+    if event_mask is None:
+        return "all"
+    if event_mask not in {"all", "signal", "background"}:
+        raise ValueError("event_mask must be one of: 'all', 'signal', 'background', or None")
+    return event_mask
+
+
+def _apply_event_mask(df: pd.DataFrame, event_mask: str | None) -> pd.DataFrame:
+    mask = _normalize_event_mask(event_mask)
+    if mask == "signal":
+        return df[df.signal == 0]
+    if mask == "background":
+        return df[df.signal != 0]
+    return df
 
 def _expand_weights(df, col, multisim_nuniv, scalars=None):
         weights = df[col].values.astype(np.float64)
@@ -392,7 +409,7 @@ def mcstat(indf, nuniv:int=100 , cols: list=['__ntuple','entry','rec.slc..index'
     return df.join(mcstat_univ_wgt)
 
 
-def get_detvar_systs(detvar_dict,var,bins,stage=None,normalize=False,**selection_kwargs):
+def get_detvar_systs(detvar_dict,var,bins,stage=None,normalize=False,event_mask: str | None = "all",**selection_kwargs):
     """Compute detector variation systematic covariance matrices.
     
     Parameters
@@ -445,24 +462,34 @@ def get_detvar_systs(detvar_dict,var,bins,stage=None,normalize=False,**selection
         
         # lexsort to avoid performance warning on columns 
         # forward selection kwargs to select function
-        cv_hist = get_hist1d(data=ensure_lexsorted(select(this_cv,savedict=False,stage=stage,**selection_kwargs),axis=1)[var],bins=bins)
+        cv_sel = _apply_event_mask(
+            ensure_lexsorted(define_signal(select(this_cv, savedict=False, stage=stage, **selection_kwargs),prefix=('slc','truth')),axis=1),
+            event_mask,
+        )
+        cv_hist = get_hist1d(data=cv_sel[var],bins=bins)/this_norm
 
         # support both unisim (single df) and multisim (list of dfs)
         dv_dfs = this_dv if isinstance(this_dv, list) else [this_dv]
         dv_hists = np.column_stack([
-            get_hist1d(data=ensure_lexsorted(select(dv,savedict=False,stage=stage,**selection_kwargs),axis=1)[var],bins=bins)
+            get_hist1d(
+                data=_apply_event_mask(
+                    ensure_lexsorted(define_signal(select(dv, savedict=False, stage=stage, **selection_kwargs),prefix=('slc','truth')),axis=1),
+                    event_mask,
+                )[var],
+                bins=bins,
+            )
             for dv in dv_dfs
-        ])  # shape: (nbins, nuniv)
+        ])/this_norm  # shape: (nbins, nuniv)
 
         if normalize:
             dv_hists = dv_hists / np.sum(dv_hists, axis=0) * np.sum(cv_hist)
         
-        cov, cov_frac, corr = calc_matrices(var_arr=dv_hists/this_norm, cv=cv_hist/this_norm)
-        matrices_dict[key] = {'hists': dv_hists/this_norm,
+        cov, cov_frac, corr = calc_matrices(var_arr=dv_hists, cv=cv_hist)
+        matrices_dict[key] = {'hists': dv_hists,
                               'cov': cov,
                               'cov_frac': cov_frac,
                               'corr': corr, 
-                              'hist_cv': cv_hist/this_norm}
+                              'hist_cv': cv_hist}
     return matrices_dict
 
 
