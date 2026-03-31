@@ -381,7 +381,7 @@ def mcstat(indf, nuniv:int=100 , cols: list=['__ntuple','entry','rec.slc..index'
     return df.join(mcstat_univ_wgt)
 
 
-def get_detvar_systs(detvar_dict,var,bins,event_mask: str | None = "all",**selection_kwargs):
+def get_detvar_systs(detvar_dict,var,bins,event_type: str | None = "all",**selection_kwargs):
     """Compute detector variation systematic covariance matrices.
     
     Parameters
@@ -433,7 +433,7 @@ def get_detvar_systs(detvar_dict,var,bins,event_mask: str | None = "all",**selec
             cv_sel = select(this_cv, savedict=False, **selection_kwargs)
         else:
             cv_sel = this_cv
-        cv_sel = apply_event_mask(ensure_lexsorted(cv_sel, axis=1), event_mask)
+        cv_sel = apply_event_mask(ensure_lexsorted(cv_sel, axis=1), event_type)
         cv_hist = get_hist1d(data=cv_sel[var],bins=bins)/this_norm
 
         # support both unisim (single df) and multisim (list of dfs)
@@ -442,7 +442,7 @@ def get_detvar_systs(detvar_dict,var,bins,event_mask: str | None = "all",**selec
             dv_dfs = [select(dv, savedict=False, **selection_kwargs) for dv in dv_dfs]
         dv_hists = np.column_stack([
             get_hist1d(
-                data=apply_event_mask(ensure_lexsorted(dv, axis=1),event_mask)[var],bins=bins)
+                data=apply_event_mask(ensure_lexsorted(dv, axis=1),event_type)[var],bins=bins)
             for dv in dv_dfs
         ])/this_norm  # shape: (nbins, nuniv)
         

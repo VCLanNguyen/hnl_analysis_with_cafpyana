@@ -75,48 +75,30 @@ def _load_detvar_dicts(
     return combined_dict
 
 
-def _block_diag_cov(cov_a, cov_b):
-    cov_a = np.asarray(cov_a, dtype=float)
-    cov_b = np.asarray(cov_b, dtype=float)
-    if cov_a.ndim != 2 or cov_b.ndim != 2 or cov_a.shape[0] != cov_a.shape[1] or cov_b.shape[0] != cov_b.shape[1]:
-        raise ValueError("cov_a and cov_b must be square 2D covariance matrices")
-    n_a = cov_a.shape[0]
-    n_b = cov_b.shape[0]
-    out = np.zeros((n_a + n_b, n_a + n_b), dtype=float)
-    out[:n_a, :n_a] = cov_a
-    out[n_a:, n_a:] = cov_b
-    return out
-
-
-def _hists_from_frac_unc(cv_hist: np.ndarray, frac_unc: np.ndarray) -> np.ndarray:
-    cv_hist = np.asarray(cv_hist, dtype=float)
-    frac_unc = np.asarray(frac_unc, dtype=float)
-    if frac_unc.shape != cv_hist.shape:
-        raise ValueError(f"frac_unc shape {frac_unc.shape} does not match hist_cv shape {cv_hist.shape}")
-    # One shifted universe whose bin-wise fractional shift matches frac_unc.
-    return (cv_hist * (1.0 + frac_unc)).reshape(-1, 1)
-
-
 def _apply_norm_and_intime_uncertainties(
     result: SystematicsOutput,
     intime_cov: np.ndarray | None = None,
+    include_norm: bool = True,
+    include_cosmic: bool = True,
     pot_norm_unc: float = 0.02,
     ntargets_unc: float = 0.01,
 ):
-    updated = add_flat_norm_uncertainty(
-        result=result,
-        frac_unc=pot_norm_unc,
-        key="BeamExposure",
-        category="BeamExposure",
-    )
-    updated = add_flat_norm_uncertainty(
-        result=updated,
-        frac_unc=ntargets_unc,
-        key="NTargets",
-        category="NTargets",
-    )
+    updated = result
+    if include_norm:
+        updated = add_flat_norm_uncertainty(
+            result=updated,
+            frac_unc=pot_norm_unc,
+            key="BeamExposure",
+            category="BeamExposure",
+        )
+        updated = add_flat_norm_uncertainty(
+            result=updated,
+            frac_unc=ntargets_unc,
+            key="NTargets",
+            category="NTargets",
+        )
 
-    if intime_cov is not None:
+    if include_cosmic and intime_cov is not None:
         cv_hist = np.asarray(updated.hist_cv, dtype=float)
         intime_unc = np.divide(
             np.sqrt(np.diag(intime_cov)),
@@ -131,7 +113,6 @@ def _apply_norm_and_intime_uncertainties(
             category="Cosmic",
             target="both" if updated.has_xsec else "rate",
             unc=intime_unc,
-            hists=_hists_from_frac_unc(cv_hist, intime_unc),
             sum_value=float(np.mean(intime_unc)),
         )
 
@@ -249,6 +230,7 @@ def add_flat_norm_uncertainty(
     frac_unc: float,
     key: str,
     category: str | None = None,
+    correlation: str = "fully_correlated",
 ):
     """
     Add a fully correlated flat normalization uncertainty to a SystematicsOutput.
@@ -263,6 +245,10 @@ def add_flat_norm_uncertainty(
         Dictionary/dataframe key label for the new source.
     category
         Category label for the dataframe entry. Defaults to `key`.
+    correlation
+        Correlation model for bin-to-bin structure:
+        - "fully_correlated": 100% correlated across bins (default).
+        - "diagonal": uncorrelated between bins.
     """
     if frac_unc < 0:
         raise ValueError("frac_unc must be non-negative")
@@ -270,17 +256,13 @@ def add_flat_norm_uncertainty(
         category = key
 
     cv_hist = np.asarray(result.hist_cv, dtype=float)
-    flat_cov = (frac_unc ** 2) * np.outer(cv_hist, cv_hist)
-    unc = np.full(cv_hist.shape, frac_unc, dtype=float)
-    return add_uncertainty(
+    frac_unc_arr = np.full(cv_hist.shape, frac_unc, dtype=float)
+    return add_fractional_uncertainty(
         result=result,
-        cov=flat_cov,
+        frac_unc=frac_unc_arr,
         key=key,
         category=category,
-        target="both" if result.has_xsec else "rate",
-        unc=unc,
-        hists=_hists_from_frac_unc(cv_hist, unc),
-        sum_value=float(frac_unc),
+        correlation=correlation,
     )
 
 
@@ -289,8 +271,7 @@ def add_fractional_uncertainty(
     frac_unc: np.ndarray,
     key: str,
     category: str | None = None,
-    target: str = "both",
-    correlation: str = "diagonal",
+    correlation: str = "fully_correlated",
 ):
     """
     Add a per-bin fractional uncertainty array with configurable correlation.
@@ -305,15 +286,14 @@ def add_fractional_uncertainty(
         Dictionary/dataframe key label for the new source.
     category
         Category label for the dataframe entry. Defaults to `key`.
-    target
-        Where to apply this uncertainty: "rate", "xsec", or "both".
     correlation
         Correlation model for bin-to-bin structure:
+        - "fully_correlated": 100% correlated across bins (default).
         - "diagonal": uncorrelated between bins.
-        - "fully_correlated": 100% correlated across bins.
     """
     if category is None:
         category = key
+    target = "both" if result.has_xsec else "rate"
 
     cv_hist = np.asarray(result.hist_cv, dtype=float)
     frac_unc = np.asarray(frac_unc, dtype=float)
@@ -342,82 +322,22 @@ def add_fractional_uncertainty(
         sum_value=float(np.mean(frac_unc)),
     )
 
-
-def add_unisim_uncertainty(
-    result: SystematicsOutput,
-    alt_hist: np.ndarray,
-    key: str,
-    category: str | None = None,
-    target: str = "both",
-):
-    """
-    Add a single-universe (unisim) uncertainty to a SystematicsOutput.
-
-    The alternate histogram is interpreted as one shifted prediction.
-    The covariance contribution is built from:
-        delta = alt_hist - hist_cv
-        cov = outer(delta, delta)
-
-    Parameters
-    ----------
-    result
-        Existing systematics result object.
-    alt_hist
-        Alternate prediction histogram with the same shape as result.hist_cv.
-    key
-        Dictionary/dataframe key label for the new source.
-    category
-        Category label for the dataframe entry. Defaults to `key`.
-    target
-        Where to apply this uncertainty: "rate", "xsec", or "both".
-    """
-    if category is None:
-        category = key
-
-    cv_hist = np.asarray(result.hist_cv, dtype=float)
-    alt_hist = np.asarray(alt_hist, dtype=float)
-    if alt_hist.shape != cv_hist.shape:
-        raise ValueError(
-            f"alt_hist shape {alt_hist.shape} does not match hist_cv shape {cv_hist.shape}"
-        )
-
-    delta = alt_hist - cv_hist
-    uni_cov = np.outer(delta, delta)
-    unc = np.divide(np.abs(delta), cv_hist, out=np.zeros_like(cv_hist, dtype=float), where=cv_hist > 0)
-
-    return add_uncertainty(
-        result=result,
-        cov=uni_cov,
-        key=key,
-        category=category,
-        target=target,
-        unc=unc,
-        hists=alt_hist.reshape(-1, 1),
-        sum_value=float(np.mean(unc)),
-    )
-
 def get_intime_cov (selected_df, var, bins, 
                     mcbnb_ngen,
                     mcbnb_pot,
                     threshold = 0.05,
-                    event_mask: str | None = "all",
+                    event_type: str | None = "all",
                     select_region: str = "signal",
                     **selection_kwargs):
     mcint_dfs = load_dfs(config.INTIME_FILE,['histgenevtdf','nuecc'])
     scale = mcbnb_ngen/mcint_dfs['histgenevtdf'].TotalGenEvents.sum()
-    if select_region == "signal":
-        mcint_df = select(mcint_dfs['nuecc'], savedict=False)
-    elif select_region == "control":
-        mcint_df = select_sideband(mcint_dfs['nuecc'], savedict=False)
-    else:
-        mcint_df = select(mcint_dfs['nuecc'], savedict=False, **selection_kwargs)
-    mcint_df[('weights_mc', '', '', '', '', '')] = scale
-    mcint_df[('flux_pot_norm', '', '', '', '', '')] = mcint_df.weights_mc/(integrated_flux * (mcbnb_pot / 1e6))
+    if select_region == "signal":    mcint_df = select(mcint_dfs['nuecc'], savedict=False)
+    elif select_region == "control": mcint_df = select_sideband(mcint_dfs['nuecc'], savedict=False)
+    else:                            mcint_df = select(mcint_dfs['nuecc'], savedict=False, **selection_kwargs)
+    mcint_df[('flux_pot_norm', '', '', '', '', '')] = scale/(integrated_flux * (mcbnb_pot / 1e6))
     # sort to avoid performance warning
-    selected_df = ensure_lexsorted(selected_df,axis=1)
-    mcint_df = ensure_lexsorted(mcint_df,axis=1)
-    selected_df = apply_event_mask(selected_df, event_mask)
-    mcint_df = apply_event_mask(mcint_df, event_mask)
+    selected_df = apply_event_mask(ensure_lexsorted(selected_df,axis=1),event_type)
+    mcint_df    = apply_event_mask(ensure_lexsorted(mcint_df,axis=1)) 
     
     cv_hist = get_hist1d(data=selected_df[var], bins=bins, 
                              weights=selected_df.flux_pot_norm)
@@ -428,8 +348,7 @@ def get_intime_cov (selected_df, var, bins,
                                      weights = selected_no_offbeam_df.flux_pot_norm)
     
     # add the intime contribution
-    int_hist = get_hist1d(data=mcint_df[var], bins=bins,
-                              weights=mcint_df.flux_pot_norm)
+    int_hist = get_hist1d(data=mcint_df[var], bins=bins,weights=mcint_df.flux_pot_norm)
     dv_hist = cv_hist_removed + int_hist
 
     matrices = calc_matrices(dv_hist.reshape(len(bins)-1,-1),cv_hist)
@@ -451,8 +370,9 @@ def get_total_cov(reco_df, reco_var, bins, mcbnb_pot,
                   selection_kwargs=None, projected_pot=1e20, 
                   mcbnb_ngen: float | None = None,
                   intime_threshold: float = 0.05,
-                  event_mask: str | None = "all",
+                  event_type: str | None = "all",
                   select_region: str = "signal",
+                  uncertainty_keys: list[str] | tuple[str, ...] | set[str] | None = None,
                   xsec_inputs: XSecInputs | None = None):
     """
     Get the total event-rate covariance matrix and systematic dataframe for a
@@ -460,7 +380,7 @@ def get_total_cov(reco_df, reco_var, bins, mcbnb_pot,
     systematic dataframe when xsec_inputs are provided.
 
     The data statistical uncertainty is added as a separate "Datastat" entry in
-    the returned event-rate dataframe, and in the xsec dataframe when requested.
+    the returned event-rate dataframe ONLY, and in the xsec dataframe when requested.
 
     Parameters
     ----------
@@ -480,10 +400,15 @@ def get_total_cov(reco_df, reco_var, bins, mcbnb_pot,
         Number of generated events for in-time calculation
     intime_threshold : float, optional
         Threshold for in-time uncertainty handling, default is 0.05 (5%)
-    event_mask : str or None, optional
+    event_type : str or None, optional
         Event mask ('all', 'signal', 'background'), default is 'all'
     select_region : str, optional
         Which detector variation dictionary to use: 'signal' (default), 'control', or 'all'.
+    uncertainty_keys : list[str] or tuple[str, ...] or set[str] or None, optional
+        Which uncertainty blocks to include. Allowed keys are:
+        'rate', 'xsec', 'detv', 'norm', 'cosmic'.
+        If None, defaults to {'rate', 'detv', 'norm', 'cosmic'} and adds
+        'xsec' only when xsec_inputs is provided.
     xsec_inputs : XSecInputs, optional
         Cross-section calculation inputs
 
@@ -494,14 +419,42 @@ def get_total_cov(reco_df, reco_var, bins, mcbnb_pot,
     
     Notes
     -----
-    - rateate_syst_dict (includes DetVar keys)
-    - xsec_syst_dict (includes DetVar keys, when xsec_inputs are provided)
+    The combination order is:
+    1) rate systematics
+    2) xsec systematics (optional)
+    3) detector-variation systematics
+    4) flat normalization uncertainties
+    5) in-time cosmic uncertainty (optional)
     """
-
     if selection_kwargs is None:
         selection_kwargs = {}
 
-    # Map select_region to appropriate config path
+    allowed_uncertainty_keys = {"rate", "xsec", "detv", "norm", "cosmic"}
+    if uncertainty_keys is None:
+        selected_uncertainty_keys = {"rate", "detv", "norm", "cosmic"}
+        if xsec_inputs is not None:
+            selected_uncertainty_keys.add("xsec")
+    else:
+        selected_uncertainty_keys = set(uncertainty_keys)
+    invalid_keys = selected_uncertainty_keys - allowed_uncertainty_keys
+    if invalid_keys:
+        raise ValueError(
+            f"uncertainty_keys contains invalid entries: {sorted(invalid_keys)}. "
+            f"Allowed keys are: {sorted(allowed_uncertainty_keys)}"
+        )
+
+    include_rate = "rate" in selected_uncertainty_keys
+    include_xsec = "xsec" in selected_uncertainty_keys
+    include_detv = "detv" in selected_uncertainty_keys
+    include_norm = "norm" in selected_uncertainty_keys
+    include_cosmic = "cosmic" in selected_uncertainty_keys
+
+    if include_xsec and xsec_inputs is None:
+        raise ValueError("'xsec' requested in uncertainty_keys, but xsec_inputs is None")
+
+    # -----------------------------
+    # 1) Validate detvar region and load detvar inputs
+    # -----------------------------
     select_region_map = {
         "signal": config.DETVAR_DICT_SIGNAL,
         "control": config.DETVAR_DICT_CONTROL,
@@ -511,82 +464,120 @@ def get_total_cov(reco_df, reco_var, bins, mcbnb_pot,
     if select_region not in select_region_map:
         raise ValueError(f"select_region must be one of {list(select_region_map.keys())}, got '{select_region}'")
     
-    detvar_path = select_region_map[select_region]
-    
-    # Load the appropriate detvar dictionary
-    print(f"Loading detvar dictionary for region: {select_region}")
-    print(f"  Path: {detvar_path}")
-    if select_region == "all":
-        detvar_dict = _load_detvar_dicts(detvar_path)
-    else:
-        # Load single file
-        with open(detvar_path, 'rb') as f:
-            detvar_dict = pickle.load(f)
-    print(f"  Loaded {len(detvar_dict)} detector variation entries")
+    detvar_dict = {}
+    if include_detv:
+        detvar_path = select_region_map[select_region]
+        print(f"Loading detvar dictionary for region: {select_region}, located at: {detvar_path}")
+        if select_region == "all":
+            detvar_dict = _load_detvar_dicts(detvar_path)
+        else:
+            with open(detvar_path, 'rb') as f:
+                detvar_dict = pickle.load(f)
+        print(f"  Loaded {len(detvar_dict)} detector variation entries")
 
-    sorted_df = apply_event_mask(ensure_lexsorted(reco_df, axis=1), event_mask)
+    # Common selected sample and CV histogram used by all covariance terms.
+    sorted_df = apply_event_mask(ensure_lexsorted(reco_df, axis=1), event_type)
     cv_hist = get_hist1d(data=sorted_df[reco_var], weights=sorted_df.flux_pot_norm, bins=bins)
 
-    detv_syst_dict = get_detvar_systs(
-        detvar_dict,
-        reco_var,
-        bins,
-        event_mask=event_mask,
-        **selection_kwargs,
-    )
-    rate_syst_dict = get_syst(reco_df=sorted_df, reco_var=reco_var, bins=bins)
-    rate_total_syst_dict = {**rate_syst_dict, **detv_syst_dict}
-    rate_syst_df = get_syst_df([rate_syst_dict, detv_syst_dict], cv_hist)
+    empty_syst_df = pd.DataFrame(columns=["key", "category", "unc", "sum", "top5"])
 
-    data_err = np.sqrt(get_hist1d(data=sorted_df[reco_var], weights=reco_df.weights_mc, bins=bins)* (projected_pot / mcbnb_pot))
-    flux_scale = integrated_flux * (projected_pot / 1e6)
-    data_unc = np.divide(data_err, flux_scale * cv_hist, out=np.zeros_like(data_err, dtype=float), where=cv_hist > 0)
-    data_syst_df = pd.DataFrame({'key': ['Datastat'], 'category': ['Datastat'], 'unc': [data_unc], 'sum': [np.mean(data_unc)], 'top5': [False]})
+    # Rolling "overall" containers for the selected uncertainty blocks.
+    rate_total_syst_dict: dict = {}
+    rate_total_cov = np.zeros((cv_hist.size, cv_hist.size))
+    rate_syst_frames: list[pd.DataFrame] = []
 
-    rate_syst_df = pd.concat([rate_syst_df, data_syst_df], ignore_index=True)
-    rate_cov = _sum_covariances_from_dicts([rate_syst_dict, detv_syst_dict], cv_hist.size)
+    if include_xsec:
+        xsec_total_syst_dict: dict = {}
+        xsec_total_cov = np.zeros((cv_hist.size, cv_hist.size))
+        xsec_syst_frames: list[pd.DataFrame] = []
 
+    # -----------------------------
+    # 2) Rate systematics (non-detvar)
+    # -----------------------------
+    if include_rate:
+        rate_syst_dict = get_syst(reco_df=sorted_df, reco_var=reco_var, bins=bins)
+        rate_total_syst_dict.update(rate_syst_dict)
+        rate_total_cov += _sum_covariances_from_dicts([rate_syst_dict], cv_hist.size)
+        rate_syst_frames.append(get_syst_df([rate_syst_dict], cv_hist))
+
+    # -----------------------------
+    # 3) XSec systematics (optional, non-detvar)
+    # -----------------------------
+    if include_xsec:
+        xsec_syst_dict = get_syst(reco_df=sorted_df, reco_var=reco_var, bins=bins, xsec_inputs=xsec_inputs)
+        xsec_total_syst_dict.update(xsec_syst_dict)
+        xsec_total_cov += _sum_covariances_from_dicts([xsec_syst_dict], cv_hist.size)
+        xsec_syst_frames.append(get_syst_df([xsec_syst_dict], cv_hist))
+
+    # -----------------------------
+    # 4) Detector-variation systematics
+    # -----------------------------
+    if include_detv:
+        detv_syst_dict = get_detvar_systs(detvar_dict, reco_var, bins, event_type=event_type, **selection_kwargs)
+        detv_cov = _sum_covariances_from_dicts([detv_syst_dict], cv_hist.size)
+        detv_syst_df = get_syst_df([detv_syst_dict], cv_hist)
+
+        rate_total_syst_dict.update(detv_syst_dict)
+        rate_total_cov += detv_cov
+        rate_syst_frames.append(detv_syst_df)
+
+        if include_xsec:
+            xsec_total_syst_dict.update(detv_syst_dict)
+            xsec_total_cov += detv_cov
+            xsec_syst_frames.append(detv_syst_df)
+
+    # Data statistical uncertainty row (kept as separate source label).
+    if include_rate:
+        data_err = np.sqrt(get_hist1d(data=sorted_df[reco_var], weights=reco_df.weights_mc, bins=bins) * (projected_pot / mcbnb_pot))
+        flux_scale = integrated_flux * (projected_pot / 1e6)
+        data_unc = np.divide(data_err, flux_scale * cv_hist, out=np.zeros_like(data_err, dtype=float), where=cv_hist > 0)
+        data_syst_df = pd.DataFrame({'key': ['Datastat'], 'category': ['Datastat'], 'unc': [data_unc], 'sum': [np.mean(data_unc)], 'top5': [False]})
+        rate_syst_frames.append(data_syst_df)
+        if include_xsec:
+            xsec_syst_frames.append(data_syst_df)
+
+    rate_syst_df = pd.concat(rate_syst_frames, ignore_index=True) if rate_syst_frames else empty_syst_df.copy()
+    if include_xsec:
+        xsec_syst_df = pd.concat(xsec_syst_frames, ignore_index=True) if xsec_syst_frames else empty_syst_df.copy()
+
+    # -----------------------------
+    # 5) In-time cosmic covariance (optional)
+    # -----------------------------
     intime_cov = None
-    if mcbnb_ngen is not None:
-        intime_cov = get_intime_cov(
-            selected_df=sorted_df,
-            var=reco_var,
-            bins=bins,
-            mcbnb_ngen=mcbnb_ngen,
-            mcbnb_pot=mcbnb_pot,
-            threshold=intime_threshold,
-            event_mask=event_mask,
-            select_region=select_region,
-            **selection_kwargs,
-        )
+    if include_cosmic and mcbnb_ngen is not None:
+        intime_cov = get_intime_cov(selected_df=sorted_df, var=reco_var, bins=bins,
+                                    mcbnb_ngen=mcbnb_ngen, mcbnb_pot=mcbnb_pot, threshold=intime_threshold,
+                                    event_type=event_type, select_region=select_region, **selection_kwargs)
 
-    if xsec_inputs is None:
+    # -----------------------------
+    # 6) Final assembly + flat normalization/in-time additions
+    # -----------------------------
+    if not include_xsec:
         base_output = SystematicsOutput(
             hist_cv=cv_hist,
-            rate_cov=rate_cov,
+            rate_cov=rate_total_cov,
             rate_syst_df=rate_syst_df,
             rate_syst_dict=rate_total_syst_dict,
         )
-        return _apply_norm_and_intime_uncertainties(base_output, intime_cov=intime_cov)
-
-    xsec_syst_dict = get_syst(
-        reco_df=sorted_df,
-        reco_var=reco_var,
-        bins=bins,
-        xsec_inputs=xsec_inputs,
-    )
-    xsec_total_syst_dict = {**xsec_syst_dict, **detv_syst_dict}
-    xsec_syst_df = get_syst_df([xsec_syst_dict, detv_syst_dict], cv_hist)
-    xsec_syst_df = pd.concat([xsec_syst_df, data_syst_df], ignore_index=True)
-    xsec_cov = _sum_covariances_from_dicts([xsec_syst_dict, detv_syst_dict], cv_hist.size)
+        return _apply_norm_and_intime_uncertainties(
+            base_output,
+            intime_cov=intime_cov,
+            include_norm=include_norm,
+            include_cosmic=include_cosmic,
+        )
 
     base_output = SystematicsOutput(
         hist_cv=cv_hist,
-        rate_cov=rate_cov,
+        rate_cov=rate_total_cov,
         rate_syst_df=rate_syst_df,
         rate_syst_dict=rate_total_syst_dict,
-        xsec_cov=xsec_cov,
+        xsec_cov=xsec_total_cov,
         xsec_syst_df=xsec_syst_df,
         xsec_syst_dict=xsec_total_syst_dict,
     )
-    return _apply_norm_and_intime_uncertainties(base_output, intime_cov=intime_cov)
+    return _apply_norm_and_intime_uncertainties(
+        base_output,
+        intime_cov=intime_cov,
+        include_norm=include_norm,
+        include_cosmic=include_cosmic,
+    )

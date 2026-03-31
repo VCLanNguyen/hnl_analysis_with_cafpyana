@@ -8,13 +8,13 @@ from pathlib import Path
 # ========================
 
 # Root directories
-XSECTION_DIR  = "/exp/sbnd/data/users/lynnt/xsection"
 NUEANA_DIR    = "/exp/sbnd/data/users/lynnt/xsection/nueana"
 CAFPYANA_PATH = "/exp/sbnd/app/users/lynnt/cafpyana"
 
 # Setup cafpyana - append to sys.path so we can import cafpyana modules
 if CAFPYANA_PATH not in sys.path:
     sys.path.append(CAFPYANA_PATH)
+    sys.path.append(CAFPYANA_PATH+"/analysis_village")
 
 # ========================
 # Data and File Paths
@@ -34,11 +34,6 @@ DETVAR_DICT_FILES = [
 ]
 DETVAR_DICT_SIGNAL = DETVAR_DICT_DIR + "/detvar_dict_signal.pkl"
 DETVAR_DICT_CONTROL = DETVAR_DICT_DIR + "/detvar_dict_control.pkl"
-
-# Data directories
-DATA_DIR = "/exp/sbnd/data/users/lynnt/xsection/data"
-SAMPLES_DIR = "/exp/sbnd/data/users/lynnt/xsection/samples"
-FIGURES_DIR = "/exp/sbnd/data/users/lynnt/xsection/figures"
 
 # ========================
 # Path Verification (Optional)
