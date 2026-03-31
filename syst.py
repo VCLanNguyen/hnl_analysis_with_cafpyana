@@ -4,39 +4,20 @@ Systematic and statistical uncertainty utilities.
 Conventions
 -----------
 - All output histograms and covariance matrices are **flux-normalized by default**.
-  Functions that support disabling this accept a `scale=True` parameter.
+Functions that support disabling this accept a `scale=True` parameter.
 - Covariance matrices are normalized by N_universes.
 - NaN weights (e.g., GENIE weights for true cosmics) are replaced with 1.0.
-- The `normalize` flag refers to **area normalization** (for considering shape-only),
-  which preserves the total CV counts but rescales each universe to match.
 """
 
 import numpy as np
 import pandas as pd
 import warnings
 from tqdm import tqdm
-from .utils import ensure_lexsorted
+from .utils import ensure_lexsorted, apply_event_mask
 from .histogram import get_hist1d, get_hist2d
 from .selection import select, define_signal
 from .classes import XSecInputs
 from .constants import integrated_flux
-
-
-def _normalize_event_mask(event_mask: str | None) -> str:
-    if event_mask is None:
-        return "all"
-    if event_mask not in {"all", "signal", "background"}:
-        raise ValueError("event_mask must be one of: 'all', 'signal', 'background', or None")
-    return event_mask
-
-
-def _apply_event_mask(df: pd.DataFrame, event_mask: str | None) -> pd.DataFrame:
-    mask = _normalize_event_mask(event_mask)
-    if mask == "signal":
-        return df[df.signal == 0]
-    if mask == "background":
-        return df[df.signal != 0]
-    return df
 
 def _expand_weights(df, col, multisim_nuniv, scalars=None):
         weights = df[col].values.astype(np.float64)
@@ -214,7 +195,6 @@ def get_syst_hists(reco_df: pd.DataFrame,
                    reco_var: str | tuple,
                    bins: np.ndarray,
                    scale: bool = True,
-                   normalize: bool = False,
                    xsec_inputs: XSecInputs | None = None,
                    expand:bool=False,
                    multisim_nuniv=100) -> tuple[dict, np.ndarray]:
@@ -336,14 +316,6 @@ def get_syst_hists(reco_df: pd.DataFrame,
 
         syst_dict[col[2]] = {'hists': hists}
 
-    if normalize:
-        for key in syst_dict:
-            h = syst_dict[key]['hists']
-            hsum = np.sum(h, axis=0)
-            syst_dict[key]['hists'] = np.divide(
-                h, hsum, out=np.zeros_like(h), where=hsum > 0
-            ) * cv_counts
-
     return syst_dict, cv
 
 def get_syst(*args, **kwargs) -> dict:
@@ -409,7 +381,7 @@ def mcstat(indf, nuniv:int=100 , cols: list=['__ntuple','entry','rec.slc..index'
     return df.join(mcstat_univ_wgt)
 
 
-def get_detvar_systs(detvar_dict,var,bins,stage=None,normalize=False,event_mask: str | None = "all",**selection_kwargs):
+def get_detvar_systs(detvar_dict,var,bins,event_mask: str | None = "all",**selection_kwargs):
     """Compute detector variation systematic covariance matrices.
     
     Parameters
@@ -423,11 +395,6 @@ def get_detvar_systs(detvar_dict,var,bins,stage=None,normalize=False,event_mask:
         Column name for the variable to histogram.
     bins : np.ndarray
         Bin edges for histogramming.
-    stage : str, optional
-        Selection stage to apply (e.g., "opening angle").
-    normalize : bool, optional
-        If True, area-normalize each universe histogram to match CV total counts.
-        Default is False.
     **selection_kwargs
         Additional keyword arguments forwarded to the `select` function.
 
@@ -462,27 +429,22 @@ def get_detvar_systs(detvar_dict,var,bins,stage=None,normalize=False,event_mask:
         
         # lexsort to avoid performance warning on columns 
         # forward selection kwargs to select function
-        cv_sel = _apply_event_mask(
-            ensure_lexsorted(define_signal(select(this_cv, savedict=False, stage=stage, **selection_kwargs),prefix=('slc','truth')),axis=1),
-            event_mask,
-        )
+        if selection_kwargs:
+            cv_sel = select(this_cv, savedict=False, **selection_kwargs)
+        else:
+            cv_sel = this_cv
+        cv_sel = apply_event_mask(ensure_lexsorted(cv_sel, axis=1), event_mask)
         cv_hist = get_hist1d(data=cv_sel[var],bins=bins)/this_norm
 
         # support both unisim (single df) and multisim (list of dfs)
         dv_dfs = this_dv if isinstance(this_dv, list) else [this_dv]
+        if selection_kwargs:
+            dv_dfs = [select(dv, savedict=False, **selection_kwargs) for dv in dv_dfs]
         dv_hists = np.column_stack([
             get_hist1d(
-                data=_apply_event_mask(
-                    ensure_lexsorted(define_signal(select(dv, savedict=False, stage=stage, **selection_kwargs),prefix=('slc','truth')),axis=1),
-                    event_mask,
-                )[var],
-                bins=bins,
-            )
+                data=apply_event_mask(ensure_lexsorted(dv, axis=1),event_mask)[var],bins=bins)
             for dv in dv_dfs
         ])/this_norm  # shape: (nbins, nuniv)
-
-        if normalize:
-            dv_hists = dv_hists / np.sum(dv_hists, axis=0) * np.sum(cv_hist)
         
         cov, cov_frac, corr = calc_matrices(var_arr=dv_hists, cv=cv_hist)
         matrices_dict[key] = {'hists': dv_hists,
