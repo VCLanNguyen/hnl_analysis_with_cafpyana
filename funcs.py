@@ -4,9 +4,9 @@ from dataclasses import replace
 import warnings
 import pickle
 from tqdm import tqdm
-from .utils import ensure_lexsorted
+from .utils import ensure_lexsorted, apply_event_mask
 from .io import load_dfs
-from .selection import select
+from .selection import select, select_sideband
 from .histogram import get_hist1d, get_hist2d
 from .syst import *
 from .classes import SystematicsOutput, XSecInputs
@@ -86,23 +86,6 @@ def _block_diag_cov(cov_a, cov_b):
     out[:n_a, :n_a] = cov_a
     out[n_a:, n_a:] = cov_b
     return out
-
-
-def _normalize_event_mask(event_mask: str | None) -> str:
-    if event_mask is None:
-        return "all"
-    if event_mask not in {"all", "signal", "background"}:
-        raise ValueError("event_mask must be one of: 'all', 'signal', 'background', or None")
-    return event_mask
-
-
-def _apply_event_mask(df: pd.DataFrame, event_mask: str | None) -> pd.DataFrame:
-    mask = _normalize_event_mask(event_mask)
-    if mask == "signal":
-        return df[df.signal == 0]
-    if mask == "background":
-        return df[df.signal != 0]
-    return df
 
 
 def _hists_from_frac_unc(cv_hist: np.ndarray, frac_unc: np.ndarray) -> np.ndarray:
@@ -417,19 +400,24 @@ def get_intime_cov (selected_df, var, bins,
                     mcbnb_ngen,
                     mcbnb_pot,
                     threshold = 0.05,
-                    intime_file="/scratch/7DayLifetime/lynnt/MCP2025B_v10_06_00_09/intime.df",
                     event_mask: str | None = "all",
+                    select_region: str = "signal",
                     **selection_kwargs):
-    mcint_dfs = load_dfs(intime_file,['histgenevtdf','nuecc'])
+    mcint_dfs = load_dfs(config.INTIME_FILE,['histgenevtdf','nuecc'])
     scale = mcbnb_ngen/mcint_dfs['histgenevtdf'].TotalGenEvents.sum()
-    mcint_df = select(mcint_dfs['nuecc'],savedict=False,**selection_kwargs)
+    if select_region == "signal":
+        mcint_df = select(mcint_dfs['nuecc'], savedict=False)
+    elif select_region == "control":
+        mcint_df = select_sideband(mcint_dfs['nuecc'], savedict=False)
+    else:
+        mcint_df = select(mcint_dfs['nuecc'], savedict=False, **selection_kwargs)
     mcint_df[('weights_mc', '', '', '', '', '')] = scale
     mcint_df[('flux_pot_norm', '', '', '', '', '')] = mcint_df.weights_mc/(integrated_flux * (mcbnb_pot / 1e6))
     # sort to avoid performance warning
     selected_df = ensure_lexsorted(selected_df,axis=1)
     mcint_df = ensure_lexsorted(mcint_df,axis=1)
-    selected_df = _apply_event_mask(selected_df, event_mask)
-    mcint_df = _apply_event_mask(mcint_df, event_mask)
+    selected_df = apply_event_mask(selected_df, event_mask)
+    mcint_df = apply_event_mask(mcint_df, event_mask)
     
     cv_hist = get_hist1d(data=selected_df[var], bins=bins, 
                              weights=selected_df.flux_pot_norm)
@@ -460,11 +448,11 @@ def get_intime_cov (selected_df, var, bins,
     return cov_final
     
 def get_total_cov(reco_df, reco_var, bins, mcbnb_pot,
-                  normalize=False, selection_kwargs=None, projected_pot=1e20, 
+                  selection_kwargs=None, projected_pot=1e20, 
                   mcbnb_ngen: float | None = None,
                   intime_threshold: float = 0.05,
-                  intime_file='/scratch/7DayLifetime/lynnt/MCP2025B_v10_06_00_09/intime.df',
                   event_mask: str | None = "all",
+                  select_region: str = "signal",
                   xsec_inputs: XSecInputs | None = None):
     """
     Get the total event-rate covariance matrix and systematic dataframe for a
@@ -474,7 +462,38 @@ def get_total_cov(reco_df, reco_var, bins, mcbnb_pot,
     The data statistical uncertainty is added as a separate "Datastat" entry in
     the returned event-rate dataframe, and in the xsec dataframe when requested.
 
-    The returned result also includes systematic dictionaries:
+    Parameters
+    ----------
+    reco_df : pd.DataFrame
+        Reconstructed event data
+    reco_var : str or tuple
+        Variable to histogram
+    bins : np.ndarray
+        Bin edges
+    mcbnb_pot : float
+        Monte Carlo BNB POT (or the main sample to normalize to)
+    selection_kwargs : dict, optional
+        Additional selection cuts to apply
+    projected_pot : float, optional
+        Projected POT for data statistics calculation
+    mcbnb_ngen : float, optional
+        Number of generated events for in-time calculation
+    intime_threshold : float, optional
+        Threshold for in-time uncertainty handling, default is 0.05 (5%)
+    event_mask : str or None, optional
+        Event mask ('all', 'signal', 'background'), default is 'all'
+    select_region : str, optional
+        Which detector variation dictionary to use: 'signal' (default), 'control', or 'all'.
+    xsec_inputs : XSecInputs, optional
+        Cross-section calculation inputs
+
+    Returns
+    -------
+    SystematicsOutput
+        Systematic uncertainties with rate (and optionally cross-section) covariances.
+    
+    Notes
+    -----
     - rateate_syst_dict (includes DetVar keys)
     - xsec_syst_dict (includes DetVar keys, when xsec_inputs are provided)
     """
@@ -482,20 +501,40 @@ def get_total_cov(reco_df, reco_var, bins, mcbnb_pot,
     if selection_kwargs is None:
         selection_kwargs = {}
 
-    detvar_dict = _load_detvar_dicts()
+    # Map select_region to appropriate config path
+    select_region_map = {
+        "signal": config.DETVAR_DICT_SIGNAL,
+        "control": config.DETVAR_DICT_CONTROL,
+        "all": config.DETVAR_DICT_FILES,
+    }
+    
+    if select_region not in select_region_map:
+        raise ValueError(f"select_region must be one of {list(select_region_map.keys())}, got '{select_region}'")
+    
+    detvar_path = select_region_map[select_region]
+    
+    # Load the appropriate detvar dictionary
+    print(f"Loading detvar dictionary for region: {select_region}")
+    print(f"  Path: {detvar_path}")
+    if select_region == "all":
+        detvar_dict = _load_detvar_dicts(detvar_path)
+    else:
+        # Load single file
+        with open(detvar_path, 'rb') as f:
+            detvar_dict = pickle.load(f)
+    print(f"  Loaded {len(detvar_dict)} detector variation entries")
 
-    sorted_df = _apply_event_mask(ensure_lexsorted(reco_df, axis=1), event_mask)
+    sorted_df = apply_event_mask(ensure_lexsorted(reco_df, axis=1), event_mask)
     cv_hist = get_hist1d(data=sorted_df[reco_var], weights=sorted_df.flux_pot_norm, bins=bins)
 
     detv_syst_dict = get_detvar_systs(
         detvar_dict,
         reco_var,
         bins,
-        normalize=normalize,
         event_mask=event_mask,
         **selection_kwargs,
     )
-    rate_syst_dict = get_syst(reco_df=sorted_df, reco_var=reco_var, bins=bins, normalize=normalize)
+    rate_syst_dict = get_syst(reco_df=sorted_df, reco_var=reco_var, bins=bins)
     rate_total_syst_dict = {**rate_syst_dict, **detv_syst_dict}
     rate_syst_df = get_syst_df([rate_syst_dict, detv_syst_dict], cv_hist)
 
@@ -516,8 +555,8 @@ def get_total_cov(reco_df, reco_var, bins, mcbnb_pot,
             mcbnb_ngen=mcbnb_ngen,
             mcbnb_pot=mcbnb_pot,
             threshold=intime_threshold,
-            intime_file=intime_file,
             event_mask=event_mask,
+            select_region=select_region,
             **selection_kwargs,
         )
 
@@ -534,7 +573,6 @@ def get_total_cov(reco_df, reco_var, bins, mcbnb_pot,
         reco_df=sorted_df,
         reco_var=reco_var,
         bins=bins,
-        normalize=normalize,
         xsec_inputs=xsec_inputs,
     )
     xsec_total_syst_dict = {**xsec_syst_dict, **detv_syst_dict}
@@ -552,214 +590,3 @@ def get_total_cov(reco_df, reco_var, bins, mcbnb_pot,
         xsec_syst_dict=xsec_total_syst_dict,
     )
     return _apply_norm_and_intime_uncertainties(base_output, intime_cov=intime_cov)
-    
-'''
-Control Region
-'''
-
-def _combine_syst_hist_dicts(sel_dict, ctrl_dict):
-    combined = {}
-    shared_keys = set(sel_dict).intersection(set(ctrl_dict))
-
-    missing_sel = sorted(set(ctrl_dict) - set(sel_dict))
-    missing_ctrl = sorted(set(sel_dict) - set(ctrl_dict))
-    if missing_sel or missing_ctrl:
-        raise ValueError(
-            "Systematic keys do not match between selected and control regions. "
-            f"Missing in selected: {missing_sel}; missing in control: {missing_ctrl}"
-        )
-
-    for key in shared_keys:
-        sel_h = sel_dict[key]["hists"]
-        ctrl_h = ctrl_dict[key]["hists"]
-
-        if sel_h.ndim == 1:
-            sel_h = sel_h.reshape(-1, 1)
-        if ctrl_h.ndim == 1:
-            ctrl_h = ctrl_h.reshape(-1, 1)
-
-        if sel_h.shape[1] != ctrl_h.shape[1]:
-            raise ValueError(
-                f"Universe-count mismatch for {key}: "
-                f"selected={sel_h.shape[1]}, control={ctrl_h.shape[1]}"
-            )
-
-        combined[key] = {"hists": np.concatenate([sel_h, ctrl_h], axis=0)}
-
-    return combined
-
-def _add_matrices_in_place(syst_hist_dict, cv_hist):
-    for key in syst_hist_dict:
-        cov, cov_frac, corr = calc_matrices(syst_hist_dict[key]["hists"], cv_hist)
-        syst_hist_dict[key]["cov"] = cov
-        syst_hist_dict[key]["cov_frac"] = cov_frac
-        syst_hist_dict[key]["corr"] = corr
-    return syst_hist_dict
-
-def get_total_cov_combined(
-    reco_df,
-    reco_control_df,
-    reco_var,
-    bins,
-    mcbnb_pot: float | None = None,
-    normalize=False,
-    selected_selection_kwargs=None,
-    control_selection_kwargs=None,
-    selected_event_mask: str | None = "all",
-    control_event_mask: str | None = "all",
-    mcbnb_ngen: float | None = None,
-    intime_threshold: float = 0.05,
-    intime_file='/scratch/7DayLifetime/lynnt/MCP2025B_v10_06_00_09/intime.df',
-    xsec_inputs: XSecInputs | None = None,
-):
-    # ! TODO: add data statistics systematics
-    """
-    Build covariance/results for a concatenated selected+control measurement.
-
-    Workflow:
-    1) run get_syst_hists separately in selected and control regions,
-    2) concatenate per-systematic histograms,
-    3) run calc_matrices on the concatenated histograms.
-
-    Notes:
-    - `reco_var` and `bins` are shared between selected/control.
-    - selection kwargs can still differ between selected/control.
-    - Returned result includes systematic dictionaries:
-      rateate_syst_dict includes DetVar keys, and xsec_syst_dict (if requested)
-      includes DetVar keys.
-    """
-    if selected_selection_kwargs is None:
-        selected_selection_kwargs = {}
-    if control_selection_kwargs is None:
-        control_selection_kwargs = {}
-
-    # CV histograms for selected and control, then concatenate.
-    reco_df = _apply_event_mask(ensure_lexsorted(reco_df, axis=1), selected_event_mask)
-    reco_control_df = _apply_event_mask(ensure_lexsorted(reco_control_df, axis=1), control_event_mask)
-
-    cv_sel = get_hist1d(data=reco_df[reco_var], weights=reco_df.flux_pot_norm, bins=bins)
-    cv_ctrl = get_hist1d(data=reco_control_df[reco_var], weights=reco_control_df.flux_pot_norm, bins=bins)
-    cv_hist = np.concatenate([cv_sel, cv_ctrl])
-
-    # Event-rate reweight systematics from selected/control, then concatenate and matrixify.
-    rate_sel_hists, _ = get_syst_hists(
-        reco_df=reco_df,
-        reco_var=reco_var,
-        bins=bins,
-        normalize=normalize,
-    )
-    rate_ctrl_hists, _ = get_syst_hists(
-        reco_df=reco_control_df,
-        reco_var=reco_var,
-        bins=bins,
-        normalize=normalize,
-    )
-    rate_syst_dict = _add_matrices_in_place(
-        _combine_syst_hist_dicts(rate_sel_hists, rate_ctrl_hists),
-        cv_hist,
-    )
-    
-    detvar_dict = _load_detvar_dicts()
-    detv_sel_hists = get_detvar_systs(
-        detvar_dict,
-        reco_var,
-        bins,
-        normalize=normalize,
-        event_mask=selected_event_mask,
-        **selected_selection_kwargs,
-    )
-    detv_ctrl_hists = get_detvar_systs(
-        detvar_dict,
-        reco_var,
-        bins,
-        normalize=normalize,
-        event_mask=control_event_mask,
-        **control_selection_kwargs,
-    )
-    detv_syst_dict = _add_matrices_in_place(
-        _combine_syst_hist_dicts(detv_sel_hists, detv_ctrl_hists),
-        cv_hist,
-    )
-    rate_total_syst_dict = {**rate_syst_dict, **detv_syst_dict}
-
-    rate_syst_df = get_syst_df([rate_syst_dict, detv_syst_dict], cv_hist)
-    # rate_syst_df = pd.concat([rate_syst_df, data_syst_df], ignore_index=True)
-    rate_cov = _sum_covariances_from_dicts([rate_syst_dict, detv_syst_dict], cv_hist.size)
-
-    intime_cov = None
-    if mcbnb_ngen is not None and mcbnb_pot is not None:
-        intime_sel_cov = get_intime_cov(
-            selected_df=reco_df,
-            var=reco_var,
-            bins=bins,
-            mcbnb_ngen=mcbnb_ngen,
-            mcbnb_pot=mcbnb_pot,
-            threshold=intime_threshold,
-            intime_file=intime_file,
-            event_mask=selected_event_mask,
-            **selected_selection_kwargs,
-        )
-        intime_ctrl_cov = get_intime_cov(
-            selected_df=reco_control_df,
-            var=reco_var,
-            bins=bins,
-            mcbnb_ngen=mcbnb_ngen,
-            mcbnb_pot=mcbnb_pot,
-            threshold=intime_threshold,
-            intime_file=intime_file,
-            event_mask=control_event_mask,
-            **control_selection_kwargs,
-        )
-        intime_cov = _block_diag_cov(intime_sel_cov, intime_ctrl_cov)
-    elif mcbnb_ngen is not None or mcbnb_pot is not None:
-        warnings.warn(
-            "Both mcbnb_ngen and mcbnb_pot are required for IntimeCosmics; skipping this uncertainty",
-            stacklevel=2,
-        )
-
-    if xsec_inputs is None:
-        base_output = SystematicsOutput(
-            hist_cv=cv_hist,
-            rate_cov=rate_cov,
-            rate_syst_df=rate_syst_df,
-            rate_syst_dict=rate_total_syst_dict,
-        )
-        return _apply_norm_and_intime_uncertainties(base_output, intime_cov=intime_cov)
-    
-    print("Calculating cross-section systematics...")
-    xsec_sel_hists, _ = get_syst_hists(
-        reco_df=reco_df,
-        reco_var=reco_var,
-        bins=bins,
-        normalize=normalize,
-        xsec_inputs=xsec_inputs,
-    )
-    xsec_ctrl_hists, _ = get_syst_hists(
-        reco_df=reco_control_df,
-        reco_var=reco_var,
-        bins=bins,
-        normalize=normalize,
-        xsec_inputs=xsec_inputs,
-    )
-    xsec_syst_dict = _add_matrices_in_place(
-        _combine_syst_hist_dicts(xsec_sel_hists, xsec_ctrl_hists),
-        cv_hist,
-    )
-    xsec_total_syst_dict = {**xsec_syst_dict, **detv_syst_dict}
-    xsec_syst_df = get_syst_df([xsec_syst_dict, detv_syst_dict], cv_hist)
-    # rate_syst_df = pd.concat([rate_syst_df, data_syst_df], ignore_index=True)
-    xsec_cov = _sum_covariances_from_dicts([xsec_syst_dict, detv_syst_dict], cv_hist.size)
-
-    base_output = SystematicsOutput(
-        hist_cv=cv_hist,
-        rate_cov=rate_cov,
-        rate_syst_df=rate_syst_df,
-        rate_syst_dict=rate_total_syst_dict,
-        xsec_cov=xsec_cov,
-        xsec_syst_df=xsec_syst_df,
-        xsec_syst_dict=xsec_total_syst_dict,
-    )
-    return _apply_norm_and_intime_uncertainties(base_output, intime_cov=intime_cov)
-    
-    
-    
