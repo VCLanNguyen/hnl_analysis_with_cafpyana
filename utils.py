@@ -53,3 +53,40 @@ def merge_hdr(hdr_df,df):
                           on = [tuple(['__ntuple'] + (nlevels-1)*['']),
                                 tuple(['entry']    + (nlevels-1)*['']),]
                           )
+
+def apply_event_mask(df: pd.DataFrame, event_mask: str | None = None) -> pd.DataFrame:
+    """ Apply event mask filter to DataFrame.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input DataFrame with a 'signal' column.
+    event_mask : str or None
+        Event classification filter: 'all', 'signal', or 'background'.
+        If None (default), returns all events.
+        
+    Returns
+    -------
+    pd.DataFrame
+        Filtered DataFrame based on the event mask.
+        - 'signal': events where signal == 0
+        - 'background': events where signal != 0
+        - 'all' or None: all events
+        
+    Raises
+    ------
+    ValueError
+        If event_mask is not one of the allowed values.
+    """
+    # Normalize: convert None to "all" and validate
+    if event_mask is None:
+        event_mask = "all"
+    if event_mask not in {"all", "signal", "background"}:
+        raise ValueError("event_mask must be one of: 'all', 'signal', 'background', or None")
+    
+    # Apply: filter based on signal column (0 = signal, nonzero = background)
+    if event_mask == "signal":
+        return df[df.signal == 0]
+    if event_mask == "background":
+        return df[df.signal != 0]
+    return df
