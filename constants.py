@@ -1,6 +1,8 @@
 """Configurations and constants."""
 import seaborn as sns
 import uproot
+from . import config
+
 # dictionary mapping signal to ints. Signal == 0 is assumed to be the desired topology. 
 signal_dict = {"nueCC":0,
                "numuCCpi0":1,
@@ -38,14 +40,19 @@ pdg_dict = {
     r"$\gamma$":   {"pdg":22,   },
     r"$p$":        {"pdg":2212, },
     r"$\pi^{+/-}$":{"pdg":211,  },
-    # "pi0": {"pdg":111, "mass":0.134976},
-    # "n": {"pdg":2112, "mass":0.939565},
-    # "other": {"pdg":0, "mass":0}
 }
 
 # flux file, units: /m^2/10^6 POT, 50 MeV bins
-fluxfile = "/exp/sbnd/data/users/lynnt/xsection/flux/sbnd_original_flux.root"
-with uproot.open(fluxfile) as f:
+with uproot.open(config.FLUX_FILE) as f:
     nue_flux = f["flux_sbnd_nue"].to_numpy()
     flux_vals = nue_flux[0]
 integrated_flux = flux_vals.sum()/1e4 # to cm2
+integrated_flux *= (180*180)/(200*200) # rescale the front face to AV front face
+
+RHO = 1.3836  #g/cm3, liquid Ar density
+N_A = 6.02214076e23 # Avogadro’s number
+M_AR = 40 # g, molar mass of argon
+# V_SBND = 380 * 380 * 440 # cm3, the active volume of the detector 
+# x cm (drift) * z cm (width) * y cm (height), excluding 90 cm of y-dimension at high z
+V_SBND = (190)*2 * ((250 - 10)*(190*2) + (450-250)*(100 + 190))
+NTARGETS = RHO * V_SBND * N_A / M_AR
