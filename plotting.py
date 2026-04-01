@@ -119,12 +119,21 @@ def plot_var(df: pd.DataFrame,
     if isinstance(df, pd.DataFrame):
         df = ensure_lexsorted(df, axis=0)
         df = ensure_lexsorted(df, axis=1)
-    
-    weight = False
-    for col in df.columns:
-        if "weights_mc" in "".join(list(col)):
-          weight=True
-          break
+
+    def _col_has_token(col, token: str) -> bool:
+        if isinstance(col, tuple):
+            return token in "_".join(map(str, col))
+        return token in str(col)
+
+    weight = any(_col_has_token(col, "weights_mc") for col in df.columns)
+
+    # Convert once to numpy arrays to avoid repeated pandas filtering per category.
+    var_vals = np.asarray(df[var])
+    if overflow:
+        var_vals = np.clip(var_vals, bins[0], bins[-1] - 1e-10)
+    signal_vals = np.asarray(df['signal'])
+    weights_vals = np.asarray(df['weights_mc']) if weight else None
+    abs_pdg_vals = np.abs(np.asarray(df[pdg_col])) if pdg else None
     
     colors = generic_colors if generic else signal_colors
     if ax is None: ax = plt.gca()
@@ -136,57 +145,68 @@ def plot_var(df: pd.DataFrame,
     
     hists       = np.zeros((ncategories,len(bins)-1)) # this is for storing the histograms
     steps       = np.zeros((ncategories,len(bins))) # this is for plotting
+    stats_var   = np.zeros((ncategories,len(bins)-1))
     
-    stats       = np.zeros(len(bins)-1)
     stats_err   = np.zeros(len(bins)-1)
     systs_err   = np.zeros(len(bins)-1)
     
     # Check if systs is provided as array (already includes stats)
     systs_is_array = isinstance(systs, np.ndarray)
 
-    if pdg==False: 
+    if pdg==False:
         for i, entry in enumerate(category_dict):
             this_cat = category_dict[entry]
-            hists[i] = get_hist1d(data=df[df.signal==this_cat][var],
-                                  weights=df[df.signal==this_cat]['weights_mc'] if weight else None,
-                                  bins=bins, overflow=overflow)
+            cat_mask = (signal_vals == this_cat)
+            cat_weights = weights_vals[cat_mask] if weight else None
+            hists[i] = np.histogram(var_vals[cat_mask], bins=bins, weights=cat_weights)[0]
+            if weight:
+                stats_var[i] = np.histogram(var_vals[cat_mask], bins=bins, weights=cat_weights**2)[0]
+            else:
+                stats_var[i] = hists[i]
     else: 
-        # other_df stores any particles that we don't specify the pdg of
-        this_other = df.copy().sort_index()
-        this_nu_df = df[df.signal < signal_dict['cosmic']].sort_index()
-        this_cosmic_df = df[df.signal >= signal_dict['cosmic']].sort_index()
+        nu_mask = signal_vals < signal_dict['cosmic']
+        cosmic_mask = signal_vals >= signal_dict['cosmic']
+        # Keep previous behavior: "other" starts from all entries then removes known PDGs.
+        other_mask = np.ones(len(df), dtype=bool)
+
         for i, key in enumerate(list(pdg_dict.keys())):
             pdg_value = pdg_dict[key]['pdg']
-            pdg_df = this_nu_df[abs(this_nu_df[pdg_col])==pdg_value].sort_index()
-            hists[i] = get_hist1d(data=pdg_df[var],
-                                  weights=pdg_df['weights_mc'] if weight else None,
-                                  bins=bins, overflow=overflow)
-            # remove the "good pdg" from other_df
-            this_other = this_other[abs(this_other[pdg_col])!=pdg_value]
-        if len(this_other) != 0:
-            hists[-1] = get_hist1d(data=this_other[var],
-                                   weights=this_other['weights_mc'] if weight else None,
-                                   bins=bins, overflow=overflow)
-        if len(this_cosmic_df) != 0:
-            hists[-2] = get_hist1d(data=this_cosmic_df[var],
-                              weights=this_cosmic_df['weights_mc'] if weight else None,
-                              bins=bins, overflow=overflow)
+            pdg_mask = nu_mask & (abs_pdg_vals == pdg_value)
+            cat_weights = weights_vals[pdg_mask] if weight else None
+            hists[i] = np.histogram(var_vals[pdg_mask], bins=bins, weights=cat_weights)[0]
+            if weight:
+                stats_var[i] = np.histogram(var_vals[pdg_mask], bins=bins, weights=cat_weights**2)[0]
+            else:
+                stats_var[i] = hists[i]
+            other_mask &= (abs_pdg_vals != pdg_value)
+
+        other_weights = weights_vals[other_mask] if weight else None
+        cosmic_weights = weights_vals[cosmic_mask] if weight else None
+        hists[-1] = np.histogram(var_vals[other_mask], bins=bins, weights=other_weights)[0]
+        hists[-2] = np.histogram(var_vals[cosmic_mask], bins=bins, weights=cosmic_weights)[0]
+        if weight:
+            stats_var[-1] = np.histogram(var_vals[other_mask], bins=bins, weights=other_weights**2)[0]
+            stats_var[-2] = np.histogram(var_vals[cosmic_mask], bins=bins, weights=cosmic_weights**2)[0]
+        else:
+            stats_var[-1] = hists[-1]
+            stats_var[-2] = hists[-2]
     
     # ! THIS ASSUMES that the PDG of interest and the signal type of interest are both index 0
     # ! e.g. for nueCC (signal==0), e- is the first entry in the pdg_dict
     hists    *= scale 
     hists[0] = mult_factor*hists[0]
 
+    stats_var *= scale**2
+    stats_var[0] *= mult_factor**2
+
     # storing the sum of each category in case we want to display it
     hist_counts = np.sum(hists,axis=1)
+    total_hist_count = np.sum(hist_counts)
 
     # check if systematic cols are inside the df
     found_systs = False
-    if (systs_is_array== False) and (systs==True):
-        for col in df.columns:
-            if "univ_" in "_".join(list(col)):
-                found_systs = True
-                break
+    if (systs_is_array == False) and (systs == True):
+        found_systs = any(_col_has_token(col, "univ_") for col in df.columns)
         
     if systs_is_array:
         # systs array already includes statistical uncertainty
@@ -208,15 +228,7 @@ def plot_var(df: pd.DataFrame,
 
     # Only calculate statistical error if systs not provided as array
     if not systs_is_array:
-        if weight==False:
-            stats_err = np.sqrt(stats) * scale
-        else:
-            unique_weights = df.weights_mc.unique()
-            for i in range(len(unique_weights)):
-                hist = get_hist1d(data=df[df.weights_mc == unique_weights[i]][var],
-                                  bins=bins,overflow=True)
-                stats_err += (hist * unique_weights[i]**2)
-            stats_err = np.sqrt(stats_err) * scale
+        stats_err = np.sqrt(np.sum(stats_var, axis=0))
 
     # Systematic error calculation
     systs_err = systs_arr * scale
@@ -238,11 +250,14 @@ def plot_var(df: pd.DataFrame,
         color = colors[i]
         if pdg: 
             plot_label = (list(pdg_dict.keys())+['cosmic']+['other'])[i]
-            if plot_label.find('cosmic')==True: color = colors[signal_dict['cosmic']]
+            if 'cosmic' in plot_label:
+                color = colors[signal_dict['cosmic']]
         else: plot_label = category_labels[i]
         if (mult_factor!= 1.0) & (i==0): plot_label +=  f" [x{mult_factor}]"
-        if counts: plot_label += f" ({int(hist_counts[i]):,})" if hist_counts[i] < 1e6 else f"({hist_counts[i]:.2e}"
-        if percents: plot_label += f" ({hist_counts[i]/np.sum(hist_counts)*100:.1f}%)"
+        if counts:
+            plot_label += f" ({int(hist_counts[i]):,})" if hist_counts[i] < 1e6 else f" ({hist_counts[i]:.2e})"
+        if percents and total_hist_count > 0:
+            plot_label += f" ({hist_counts[i]/total_hist_count*100:.1f}%)"
         bottom=steps[i-1] if i>0 else 0
         # steps needs the first entry to be repeated!
         steps[i] = np.insert(hists[i],obj=0,values=hists[i][0]) + bottom;
@@ -440,7 +455,6 @@ def plot_mc_data(mc_df: pd.DataFrame,
     
     # plot the ratio
     mc_tot = mc_steps[-1][1:]  # last step contains the total MC counts
-    fig.canvas.draw()
 
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore",message="invalid value encountered in divide")
@@ -541,7 +555,6 @@ def plot_mc_hnl_data(mc_df: pd.DataFrame,
     
     # plot the ratio
     mc_tot = mc_steps[-1][1:]  # last step contains the total MC counts
-    fig.canvas.draw()
 
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore",message="invalid value encountered in divide")
