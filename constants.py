@@ -70,19 +70,18 @@ signal_hnl_labels = [
                  "Cosmic",
                  "Offbeam"
                  ]
-signal_hnl_colors = [
-                col_dict['DeepViolet'] #hnl
+signal_hnl_colors= [
+                col_dict['Coral'] #hnl
                 ,col_dict['MintGreen'] #ccpi0
-                ,col_dict['Coral'] #ncpi0
+                ,col_dict['Flamingo'] #ncpi0
                 ,col_dict['Teal'] #othercc
                 ,col_dict['Lavender'] #othernc
                 ,col_dict['Aqua'] #ccnue
                 ,col_dict['Peach'] #nonfv
                 ,col_dict['RosyBrown4'] #dirt
-                ,col_dict['LightGray'] #cosmic  
-                ,col_dict['SlateGray'] #offbeam
+                ,col_dict['SlateGray'] #cosmic  
+                ,col_dict['LightGray'] #offbeam
                 ]
-
 
 #------------------------------------------------------------------#
 # CCnue analysis
