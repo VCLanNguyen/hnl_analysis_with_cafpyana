@@ -257,7 +257,9 @@ def plot_var(df: pd.DataFrame,
                              lw=1.5, 
                              hatch=hatch[i],zorder=(ncategories-i),label=plot_label)
         else:
-            ax.step(bins, steps[i], where="pre", color=color, lw=1.5, label=plot_label, zorder=(ncategories-i))
+            edge_baseline = steps[i-1][1:] if i > 0 else 0.0
+            ax.stairs(hists[i], bins, baseline=edge_baseline, color=color, lw=2.0,
+                      label=plot_label, zorder=(ncategories-i))
     
     if plot_err: 
         systs_options = {"step":"pre", "color":mpl.colors.to_rgba("gray", alpha=0.75),
