@@ -102,8 +102,13 @@ tmax_period5c = tmax_run1.timestamp() * 1e9
 #=======================================================================#
 
 #MC neutrino
-mc_offset_calib = -196.044 #ns
-mc_period_calib = 18.936 #ns
+mcbnb_offset_calib = -196.044 #ns
+mcbnb_period_calib = 18.936 #ns
+#-----------------------------------------------------------------------#
+
+#MC HNL
+mchnl_offset_calib = -505.4 #ns
+mchnl_period_calib = 18.936 #ns
 #-----------------------------------------------------------------------#
 
 #Data Offbeam
