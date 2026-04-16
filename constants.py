@@ -57,7 +57,7 @@ signal_pi0_colors = [
 # HNL analysis
 #------------------------------------------------------------------#
 # dictionary mapping signal to ints. Signal == 0 is assumed to be the desired topology. 
-signal_hnl_dict = {"hnl":0, "CCpi0":1, "NCpi0": 2, "othernumuCC":3, "otherNC": 4, "CCnue": 5, "nonFV":6, "dirt":7, "cosmic":8, "offbeam":9}
+signal_hnl_dict = {"hnl":0, "CCpi0":1, "NCpi0": 2, "othernumuCC":3, "otherNC": 4, "CCnue": 5, "nonFV":6, "dirt":7, "cosmic":8, "offbeam":9, "hnlcosmic":10}
 signal_hnl_labels = [
                  r"HNL",
                  r"CC$\nu$$\pi^0$",
@@ -68,7 +68,9 @@ signal_hnl_labels = [
                  r"Non-FV $\nu$",
                  r"Dirt $\nu$",
                  "Cosmic",
-                 "Offbeam"
+                 "Offbeam",
+                 "HNL Cosmic"
+
                  ]
 signal_hnl_colors= [
                 col_dict['Coral'] #hnl
@@ -81,6 +83,7 @@ signal_hnl_colors= [
                 ,col_dict['RosyBrown4'] #dirt
                 ,col_dict['SlateGray'] #cosmic  
                 ,col_dict['LightGray'] #offbeam
+                ,col_dict['MidnightBlack'] #hnlcosmic
                 ]
 
 #------------------------------------------------------------------#
