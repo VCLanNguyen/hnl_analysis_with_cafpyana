@@ -21,6 +21,8 @@ from .utils import ensure_lexsorted
 from .syst import *
 from .histogram import *
 
+_SLC_LEVELS = ['__ntuple', 'entry', 'rec.slc..index']
+
 def plot_var(df: pd.DataFrame,
              var: tuple | str,
              bins: np.ndarray,
@@ -44,7 +46,7 @@ def plot_var(df: pd.DataFrame,
              hist_filled: bool = True,
              error_legend: bool = True,
              legend_kwargs: dict | None = None,
-             
+             count_mode: str = 'auto',
              ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Plot a variable as stacked histograms for signal categories or PDG types.
 
@@ -108,7 +110,14 @@ def plot_var(df: pd.DataFrame,
     legend_kwargs : dict, optional
         Dictionary of keyword arguments to pass to ax.legend(). These will override
         the default legend settings (ncol=2, loc='upper right').
-    
+    count_mode : str, default 'auto'
+        Controls what the legend entry counts represent when ``counts=True``.
+        - 'auto'   : 'slc' var on PFP-level df → slices; 'pfp' var → PFPs;
+                     anything else → rows (correct when df is already slice-level).
+        - 'slices' : always count unique slices (use for primshw/secshw vars on
+                     PFP-level dfs, or any non-slc/pfp var where you want slices).
+        - 'pfps'   : always count rows.
+
     Returns
     -------
     bins, steps, total_err
@@ -127,13 +136,38 @@ def plot_var(df: pd.DataFrame,
 
     weight = any(_col_has_token(col, "weights_mc") for col in df.columns)
 
+    # Determine whether to count unique slices or rows for the legend.
+    # 'auto': slice vars on PFP-level dfs → slices; everything else → rows.
+    # 'slices': always deduplicate to one row per slice.
+    # 'pfps': always count rows as-is.
+    _SLC_NLEVELS = 3  # __ntuple, entry, rec.slc..index
+    _extra_idx_levels = df.index.nlevels - _SLC_NLEVELS if isinstance(df, pd.DataFrame) else 0
+    _is_pfp_level_df = _extra_idx_levels > 0
+
+    _need_slice_dedup = (
+        count_mode == 'slices'
+        or (count_mode == 'auto'
+            and isinstance(var, tuple) and var[0] == 'slc'
+            and _is_pfp_level_df)
+    )
+
     # Convert once to numpy arrays to avoid repeated pandas filtering per category.
-    var_vals = np.asarray(df[var])
+    # If slice dedup is needed, filter to one row per slice before histogramming.
+    if _need_slice_dedup and _is_pfp_level_df:
+        _slc_idx = df.index.droplevel(list(range(_SLC_NLEVELS, df.index.nlevels)))
+        _fps = np.asarray(~_slc_idx.duplicated())
+        var_vals    = np.asarray(df[var])[_fps]
+        signal_vals = np.asarray(df['signal'])[_fps]
+        weights_vals = np.asarray(df['weights_mc'])[_fps] if weight else None
+        abs_pdg_vals = np.abs(np.asarray(df[pdg_col]))[_fps] if pdg else None
+    else:
+        var_vals    = np.asarray(df[var])
+        signal_vals = np.asarray(df['signal'])
+        weights_vals = np.asarray(df['weights_mc']) if weight else None
+        abs_pdg_vals = np.abs(np.asarray(df[pdg_col])) if pdg else None
+
     if overflow:
         var_vals = np.clip(var_vals, bins[0], bins[-1] - 1e-10)
-    signal_vals = np.asarray(df['signal'])
-    weights_vals = np.asarray(df['weights_mc']) if weight else None
-    abs_pdg_vals = np.abs(np.asarray(df[pdg_col])) if pdg else None
     
     colors = generic_colors if generic else signal_colors
     if ax is None: ax = plt.gca()
@@ -167,7 +201,7 @@ def plot_var(df: pd.DataFrame,
         nu_mask = signal_vals < signal_dict['cosmic']
         cosmic_mask = signal_vals >= signal_dict['cosmic']
         # Keep previous behavior: "other" starts from all entries then removes known PDGs.
-        other_mask = np.ones(len(df), dtype=bool)
+        other_mask = np.ones(len(signal_vals), dtype=bool)
 
         for i, key in enumerate(list(pdg_dict.keys())):
             pdg_value = pdg_dict[key]['pdg']
@@ -200,7 +234,7 @@ def plot_var(df: pd.DataFrame,
     stats_var[0] *= mult_factor**2
 
     # storing the sum of each category in case we want to display it
-    hist_counts = np.sum(hists,axis=1)
+    hist_counts = np.sum(hists, axis=1)
     total_hist_count = np.sum(hist_counts)
 
     # check if systematic cols are inside the df
@@ -385,6 +419,17 @@ def data_plot_overlay(df: pd.DataFrame,
         df = ensure_lexsorted(df, axis=0)
         df = ensure_lexsorted(df, axis=1)
 
+    _SLC_NLEVELS = 3
+    _is_pfp_level_df = isinstance(df, pd.DataFrame) and df.index.nlevels > _SLC_NLEVELS
+    _need_slice_dedup = (
+        _is_pfp_level_df
+        and isinstance(var, tuple) and var[0] == 'slc'
+    )
+    if _need_slice_dedup:
+        _slc_idx = df.index.droplevel(list(range(_SLC_NLEVELS, df.index.nlevels)))
+        _fps = ~_slc_idx.duplicated()
+        df = df[_fps]
+
     hist = get_hist1d(data=df[var], bins=bins, overflow=overflow)
     errors = np.sqrt(hist)
     label = "data" 
@@ -504,6 +549,7 @@ def plot_mc_hnl_data(mc_df: pd.DataFrame,
                  savefig: str = "",
                  scale_nu: float = 1.0,
                  scale_hnl: float = 1.0,
+                 count_mode: str = 'auto',
                  **kwargs) -> tuple[plt.Figure, plt.Axes, plt.Axes]:
     """Create a combined MC stack filled histogram + HNL step histogram + data overlay plot with data/MC ratio subplot.
 
@@ -529,6 +575,11 @@ def plot_mc_hnl_data(mc_df: pd.DataFrame,
         Scale factor for neutrino MC.
     scale_hnl : float, default 1.0
         Scale factor for HNL MC.
+    count_mode : str, default 'auto'
+        Passed to plot_var. Controls what the legend counts show:
+        'auto'   → 'slc' vars count slices, 'pfp' vars count PFPs, others count rows.
+        'slices' → always count unique slices (use for primshw/secshw/primtrk vars).
+        'pfps'   → always count rows.
     **kwargs
         All other arguments (scale, pdg, pdg_col, xlabel, ylabel, title, counts, normalize,
         systs, hatch, etc.) are forwarded to :func:`plot_var`.
@@ -544,8 +595,8 @@ def plot_mc_hnl_data(mc_df: pd.DataFrame,
     ax_sub = fig.add_subplot(gs[1])
 
     data_args = dict(df=data_df, var=var, bins=bins, ax=ax_main, normalize=kwargs.get('normalize', False), overflow=kwargs.get('overflow',True))
-    mc_args   = dict(df=mc_df, var=var, bins=bins, ax=ax_main, hist_filled=True, error_legend=False, scale = scale_nu, **kwargs)
-    hnl_args = dict(df=hnl_df, var=var, bins=bins, ax=ax_main, hist_filled=False, error_legend=True, scale = scale_hnl, **kwargs)
+    mc_args   = dict(df=mc_df, var=var, bins=bins, ax=ax_main, hist_filled=True, error_legend=False, scale=scale_nu, count_mode=count_mode, **kwargs)
+    hnl_args  = dict(df=hnl_df, var=var, bins=bins, ax=ax_main, hist_filled=False, error_legend=True, scale=scale_hnl, count_mode=count_mode, **kwargs)
 
     data_hist, data_err, data_plot = data_plot_overlay(**data_args)
     mc_bins, mc_steps, mc_err, mc_dict = plot_var(**mc_args)
@@ -591,3 +642,71 @@ def plot_mc_hnl_data(mc_df: pd.DataFrame,
         plt.savefig(savefig,bbox_inches='tight')
     
     return fig, ax_main, ax_sub, mc_dict
+
+def plot_topo_heatmap(df,
+                      col_shws=('slc', 'n_shws', '', '', '', ''),
+                      col_trks=('slc', 'n_trks', '', '', '', ''),
+                      max_shws=5,
+                      max_trks=5,
+                      title='Topology',
+                      cmap='Blues',
+                      figsize=(7, 5),
+                      ax=None):
+    """2D heatmap of n_shws vs n_trks per slice showing percentage.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        PFP-level DataFrame with n_shws and n_trks columns (from count_topo).
+    col_shws, col_trks : tuple
+        Column keys for n_shws and n_trks.
+    max_shws, max_trks : int
+        Maximum number of showers/tracks to show on each axis.
+    title : str
+        Plot title.
+    cmap : str
+        Colormap.
+    figsize : tuple
+    ax : matplotlib.axes.Axes, optional
+
+    Returns
+    -------
+    fig, ax
+    """
+    slc = df.groupby(level=_SLC_LEVELS).first()[[col_shws, col_trks]].copy()
+    slc.columns = ['n_shws', 'n_trks']
+    slc = slc.dropna()
+    slc['n_shws'] = slc['n_shws'].astype(int).clip(0, max_shws)
+    slc['n_trks'] = slc['n_trks'].astype(int).clip(0, max_trks)
+
+    n_total = len(slc)
+    bins_s = np.arange(0, max_shws + 2) - 0.5
+    bins_t = np.arange(0, max_trks + 2) - 0.5
+
+    counts, _, _ = np.histogram2d(slc['n_trks'], slc['n_shws'], bins=[bins_t, bins_s])
+    pct = counts / n_total * 100
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.get_figure()
+
+    im = ax.imshow(pct.T, origin='lower', aspect='auto', cmap=cmap,
+                   vmin=0, vmax=pct.max())
+    plt.colorbar(im, ax=ax, label='% of slices')
+
+    ax.set_xticks(range(max_trks + 1))
+    ax.set_yticks(range(max_shws + 1))
+    ax.set_xlabel('n tracks', fontsize=12)
+    ax.set_ylabel('n showers', fontsize=12)
+    ax.set_title(f'{title}  (N={n_total})', fontsize=12)
+
+    for i in range(max_trks + 1):
+        for j in range(max_shws + 1):
+            val = pct[i, j]
+            color = 'white' if val > pct.max() * 0.6 else 'black'
+            ax.text(i, j, f'{val:.1f}%', ha='center', va='center',
+                    fontsize=9, color=color)
+
+    fig.tight_layout()
+    return fig, ax
