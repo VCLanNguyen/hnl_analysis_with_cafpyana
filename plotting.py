@@ -21,6 +21,9 @@ from .utils import ensure_lexsorted
 from .syst import *
 from .histogram import *
 
+def annotate_internal(ax):
+    ax.annotate("SBND Internal", xy=(0.0, 1.02), xycoords='axes fraction', ha='left',color='gray',fontweight='bold')
+
 def plot_var(df: pd.DataFrame,
              var: tuple | str,
              bins: np.ndarray,
@@ -39,6 +42,7 @@ def plot_var(df: pd.DataFrame,
              pdg: bool = False,
              pdg_col: tuple | str = 'pfp_shw_truth_p_pdg',
              hatch: list[str] | None = None,
+             bin_labels : list[str] | None = None,
              generic: bool = False,
              overflow: bool = True,
              hist_filled: bool = True,
@@ -84,8 +88,11 @@ def plot_var(df: pd.DataFrame,
         List of x-values at which to draw vertical cut lines.
     plot_err : bool, default True
         If True, draw MC statistical (and optional systematic) error bands.
-    systs : bool, default False
-        if True, calculates and plots systematic uncertainties. 
+    systs : bool | np.ndarray, optional
+        if True, calculates and plots systematic uncertainties stored in the input dataframe. 
+        if given as a numpy array, uses the provided values as total uncertainties 
+        (e.g. from an external calculation) and plots them without attempting to separate stat/syst.
+        if False or None, no error bands are plotted.
     pdg : bool, default False
         When True, split histograms by PDG (uses ``pdg_col``). Otherwise split by signal type.
     pdg_col : tuple | str, default 'pfp_shw_truth_p_pdg'
@@ -139,13 +146,14 @@ def plot_var(df: pd.DataFrame,
     if ax is None: ax = plt.gca()
     category_dict = generic_dict if generic else (pdg_dict if pdg else signal_dict)
     category_labels = generic_labels if generic else signal_labels
-    ncategories = len(generic_dict) if generic else (len(pdg_dict)+2 if pdg else len(signal_dict))
+    ncategories = len(generic_dict) if generic else (len(pdg_dict)+3 if pdg else len(signal_dict))
     if hatch == None: hatch = [""]*ncategories
     alpha = 0.25 if pdg else 0.4
     
     hists       = np.zeros((ncategories,len(bins)-1)) # this is for storing the histograms
     steps       = np.zeros((ncategories,len(bins))) # this is for plotting
     stats_var   = np.zeros((ncategories,len(bins)-1))
+    bin_widths  = np.diff(bins)
     
     stats_err   = np.zeros(len(bins)-1)
     systs_err   = np.zeros(len(bins)-1)
@@ -165,9 +173,10 @@ def plot_var(df: pd.DataFrame,
                 stats_var[i] = hists[i]
     else: 
         nu_mask = signal_vals < signal_dict['cosmic']
-        cosmic_mask = signal_vals >= signal_dict['cosmic']
-        # Keep previous behavior: "other" starts from all entries then removes known PDGs.
-        other_mask = np.ones(len(df), dtype=bool)
+        cosmic_mask = signal_vals == signal_dict['cosmic']
+        offbeam_mask = signal_vals == signal_dict['offbeam']
+        # "other" starts from nu entries then removes known PDGs.
+        other_mask = nu_mask.copy()
 
         for i, key in enumerate(list(pdg_dict.keys())):
             pdg_value = pdg_dict[key]['pdg']
@@ -182,14 +191,18 @@ def plot_var(df: pd.DataFrame,
 
         other_weights = weights_vals[other_mask] if weight else None
         cosmic_weights = weights_vals[cosmic_mask] if weight else None
+        offbeam_weights = weights_vals[offbeam_mask] if weight else None
         hists[-1] = np.histogram(var_vals[other_mask], bins=bins, weights=other_weights)[0]
-        hists[-2] = np.histogram(var_vals[cosmic_mask], bins=bins, weights=cosmic_weights)[0]
+        hists[-2] = np.histogram(var_vals[offbeam_mask], bins=bins, weights=offbeam_weights)[0]
+        hists[-3] = np.histogram(var_vals[cosmic_mask], bins=bins, weights=cosmic_weights)[0]
         if weight:
             stats_var[-1] = np.histogram(var_vals[other_mask], bins=bins, weights=other_weights**2)[0]
-            stats_var[-2] = np.histogram(var_vals[cosmic_mask], bins=bins, weights=cosmic_weights**2)[0]
+            stats_var[-2] = np.histogram(var_vals[offbeam_mask], bins=bins, weights=offbeam_weights**2)[0]
+            stats_var[-3] = np.histogram(var_vals[cosmic_mask], bins=bins, weights=cosmic_weights**2)[0]
         else:
             stats_var[-1] = hists[-1]
             stats_var[-2] = hists[-2]
+            stats_var[-3] = hists[-3]
     
     # ! THIS ASSUMES that the PDG of interest and the signal type of interest are both index 0
     # ! e.g. for nueCC (signal==0), e- is the first entry in the pdg_dict
@@ -214,7 +227,7 @@ def plot_var(df: pd.DataFrame,
         systs_arr = systs
         syst_dict = {}
     elif (systs==True) & (found_systs): 
-        syst_dict = get_syst(indf=df,var=var,bins=bins,scale=False)
+        syst_dict = get_syst(indf=df,var=var,bins=bins,scale=True)
         total_cov = np.zeros(len(bins)-1)
         for key in syst_dict.keys():
             total_cov += np.diag(syst_dict[key]['cov'])
@@ -234,24 +247,20 @@ def plot_var(df: pd.DataFrame,
     systs_err = systs_arr * scale
 
     if normalize:
-        # Use actual bin widths for proper normalization
-        bin_widths = np.diff(bins)
-        # Normalize each bin by its width, then scale by total integral
-        hists_per_width = hists / bin_widths[np.newaxis, :]
-        total_integral = np.sum(hists_per_width * bin_widths)
-        
-        # Apply normalization
-        hists = hists_per_width / total_integral
+        total_integral = np.sum(hists * bin_widths)
+        hists = hists / total_integral
         if not systs_is_array:
-            stats_err = (stats_err / bin_widths) / total_integral
-        systs_err = (systs_err / bin_widths) / total_integral
+            stats_err = stats_err / total_integral
+        systs_err = systs_err / total_integral
         
     for i in range(ncategories):
         color = colors[i]
         if pdg: 
-            plot_label = (list(pdg_dict.keys())+['cosmic']+['other'])[i]
+            plot_label = (list(pdg_dict.keys())+['cosmic']+['offbeam']+['other'])[i]
             if 'cosmic' in plot_label:
                 color = colors[signal_dict['cosmic']]
+            if 'offbeam' in plot_label:
+                color = colors[signal_dict['offbeam']]
         else: plot_label = category_labels[i]
         if (mult_factor!= 1.0) & (i==0): plot_label +=  f" [x{mult_factor}]"
         if counts:
@@ -323,6 +332,11 @@ def plot_var(df: pd.DataFrame,
     ax.set_xlabel('_'.join(var)) if xlabel == "" else ax.set_xlabel(xlabel)
     ax.set_ylabel("Counts")      if ylabel == "" else ax.set_ylabel(ylabel)
     ax.set_title ('_'.join(var)) if title  == "" else ax.set_title (title)
+    #annotate_internal(ax)
+    
+    if bin_labels is not None:
+        ax.set_xticks(bins)
+        ax.set_xticklabels(bin_labels)
     
     # Apply legend with custom kwargs
     default_legend_kwargs = {'ncol': 2, 'loc': 'upper right'}
@@ -387,18 +401,15 @@ def data_plot_overlay(df: pd.DataFrame,
 
     hist = get_hist1d(data=df[var], bins=bins, overflow=overflow)
     errors = np.sqrt(hist)
+    bin_widths = np.diff(bins)
+
     label = "data" 
     label += f" ({np.sum(hist,dtype=int):,})" if np.sum(hist) < 1e6 else f"({np.sum(hist):.2e})"
     
     if normalize:
-        # Use actual bin widths for proper normalization
-        bin_widths = np.diff(bins)
-        # Normalize by bin width to get density, then by total integral
-        hist_per_width = hist / bin_widths
-        total_integral = np.sum(hist_per_width * bin_widths)
-        
-        hist = hist_per_width / total_integral
-        errors = (errors / bin_widths) / total_integral
+        total_integral = np.sum(hist * bin_widths)
+        hist = hist / total_integral
+        errors = errors / total_integral
     
     bin_centers = 0.5*(bins[1:] + bins[:-1])
     plot = ax.errorbar(bin_centers, hist, yerr=errors, fmt='.',color='black',zorder=1e3,label=label)
@@ -408,6 +419,7 @@ def plot_mc_data(mc_df: pd.DataFrame,
                  data_df: pd.DataFrame,
                  var: str | tuple,
                  bins: list[float] | np.ndarray,
+                 bin_labels: list[str] | None = None,
                  figsize: tuple[int, int] = (7, 6),
                  ratio_min: float = 0.0,
                  ratio_max: float = 2.0,
@@ -504,6 +516,7 @@ def plot_mc_hnl_data(mc_df: pd.DataFrame,
                  savefig: str = "",
                  scale_nu: float = 1.0,
                  scale_hnl: float = 1.0,
+                 bin_labels: list[str] | None = None,
                  **kwargs) -> tuple[plt.Figure, plt.Axes, plt.Axes]:
     """Create a combined MC stack filled histogram + HNL step histogram + data overlay plot with data/MC ratio subplot.
 
@@ -550,7 +563,7 @@ def plot_mc_hnl_data(mc_df: pd.DataFrame,
     data_hist, data_err, data_plot = data_plot_overlay(**data_args)
     mc_bins, mc_steps, mc_err, mc_dict = plot_var(**mc_args)
     hnl_bins, hnl_steps, hnl_err, hnl_dict = plot_var(**hnl_args)
-    
+
     xmin, xmax = ax_main.get_xlim()
     
     # plot the ratio
@@ -586,8 +599,14 @@ def plot_mc_hnl_data(mc_df: pd.DataFrame,
         for cut in cut_val:
             # ax_main.axvline(cut, color='black', linestyle='--', linewidth=2, alpha=0.5, zorder=1e2)
             ax_sub.axvline (cut, color='black', linestyle='--', linewidth=2, alpha=0.5, zorder=1e2)
-    
+    if bin_labels is not None:
+        ax_main.set_xticks(bins)
+        ax_main.set_xticklabels(bin_labels)
+        ax_sub.set_xticks(bins)
+        ax_sub.set_xticklabels(bin_labels)
+    #annotate_internal(ax_main)
+
     if savefig!="":
         plt.savefig(savefig,bbox_inches='tight')
     
-    return fig, ax_main, ax_sub, mc_dict
+    return fig, ax_main, ax_sub, mc_dict, hnl_dict

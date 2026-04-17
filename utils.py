@@ -1,6 +1,9 @@
 """Generic DataFrame utilities."""
 import pandas as pd
 from math import floor, log10
+from pyanalib.pandas_helpers import *
+
+from . import config
 
 def ensure_lexsorted(frame, axis):
     """Ensure DataFrame axes are fully lexsorted when using MultiIndex.
@@ -43,3 +46,65 @@ def sci_notation(num, decimal_digits=1, precision=None, exponent=None):
         precision = decimal_digits
 
     return r"${0:.{2}f}\times10^{{{1:d}}}$".format(coeff, exponent, precision)
+def merge_hdr(hdr_df,df):
+    """Merge header DataFrame with main DataFrame on entry and __ntuple.
+    
+    Parameters
+    ----------
+    hdr_df : pandas.DataFrame
+        DataFrame containing header information with columns including '__ntuple' and 'entry'.
+    df : pandas.DataFrame
+        Main DataFrame containing event data with columns including '__ntuple' and 'entry'.
+    Returns
+    -------
+    pandas.DataFrame
+        Merged DataFrame containing all columns from both hdr_df and df, merged on '__ntuple' and 'entry'.
+    Notes
+    -----
+    - The merge is performed on the columns '__ntuple' and 'entry', which are expected to be present in both DataFrames.
+    - The function ensures that both DataFrames are lexsorted on the relevant columns before merging to avoid performance issues with MultiIndex.
+    """
+    nlevels = df.index.nlevels 
+    hdr_cols = ['__ntuple','entry','run','subrun','evt']
+    return multicol_merge(ensure_lexsorted(hdr_df.reset_index(),axis=1)[hdr_cols],
+                          ensure_lexsorted(df.reset_index(),axis=1),
+                          on = [tuple(['__ntuple'] + (nlevels-1)*['']),
+                                tuple(['entry']    + (nlevels-1)*['']),]
+                          )
+
+def apply_event_mask(df: pd.DataFrame, event_mask: str | None = None) -> pd.DataFrame:
+    """ Apply event mask filter to DataFrame.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input DataFrame with a 'signal' column.
+    event_mask : str or None
+        Event classification filter: 'all', 'signal', or 'background'.
+        If None (default), returns all events.
+        
+    Returns
+    -------
+    pd.DataFrame
+        Filtered DataFrame based on the event mask.
+        - 'signal': events where signal == 0
+        - 'background': events where signal != 0
+        - 'all' or None: all events
+        
+    Raises
+    ------
+    ValueError
+        If event_mask is not one of the allowed values.
+    """
+    # Normalize: convert None to "all" and validate
+    if event_mask is None:
+        event_mask = "all"
+    if event_mask not in {"all", "signal", "background"}:
+        raise ValueError("event_mask must be one of: 'all', 'signal', 'background', or None")
+    
+    # Apply: filter based on signal column (0 = signal, nonzero = background)
+    if event_mask == "signal":
+        return df[df.signal == 0]
+    if event_mask == "background":
+        return df[df.signal != 0]
+    return df

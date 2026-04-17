@@ -4,22 +4,38 @@ Systematic and statistical uncertainty utilities.
 Conventions
 -----------
 - All output histograms and covariance matrices are **flux-normalized by default**.
-  Functions that support disabling this accept a `scale=True` parameter.
+Functions that support disabling this accept a `scale=True` parameter.
 - Covariance matrices are normalized by N_universes.
 - NaN weights (e.g., GENIE weights for true cosmics) are replaced with 1.0.
-- The `normalize` flag refers to **area normalization** (for considering shape-only),
-  which preserves the total CV counts but rescales each universe to match.
 """
 
 import numpy as np
 import pandas as pd
 import warnings
 from tqdm import tqdm
-from .utils import ensure_lexsorted
+from .utils import ensure_lexsorted, apply_event_mask
 from .histogram import get_hist1d, get_hist2d
-from .selection import select
+from .selection import select, define_signal
+from .classes import XSecInputs
+from .constants import integrated_flux
 
-def is_xsec_rate(col, xsec, sigdf, var_true, var_sig):
+def _expand_weights(df, col, multisim_nuniv, scalars=None):
+        weights = df[col].values.astype(np.float64)
+        isnan = np.isnan(weights)
+
+        if scalars is None:
+            i_vals = np.arange(multisim_nuniv)
+            seed_strs = np.char.add(np.char.add("".join(list(col)), i_vals.astype(str)), str(id(df)))
+            seed_ints = np.fromiter((hash(s) % (2**32) for s in seed_strs), dtype=np.uint32, count=len(i_vals))
+            scalars = np.array([np.random.default_rng(int(s)).normal(0, 1) for s in seed_ints], dtype=np.float64)
+
+        # One random throw per universe (coherent across all events).
+        weights_mlt = 1 + (weights - 1)[:, np.newaxis] * scalars[np.newaxis, :]
+        weights_mlt = np.maximum(weights_mlt, 0)
+        weights_mlt[isnan, :] = 1.0  # reset NaN weights to 1.0
+        return weights_mlt
+    
+def is_xsec(col: tuple, xsec_inputs: XSecInputs | None) -> bool:
     """Check if event rate calculation should be used for cross-section systematics.
     
     Parameters
@@ -40,8 +56,7 @@ def is_xsec_rate(col, xsec, sigdf, var_true, var_sig):
     bool
         True if column contains "GENIE" and all xsec parameters are provided; False otherwise.
     """
-    return ("GENIE" in "".join(list(col)) and xsec and sigdf is not None 
-            and var_true is not None and var_sig is not None)
+    return ("GENIE" in "".join(list(col)) and xsec_inputs is not None)
 
 def calc_matrices(var_arr: np.ndarray, cv: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
@@ -178,12 +193,9 @@ def get_syst_hists(indf: pd.DataFrame,
                    var: str | tuple,
                    bins: np.ndarray,
                    scale: bool = True,
-                   normalize: bool = False,
-                   xsec: bool = False,
-                   sigdf: pd.DataFrame = None,
-                   scale_sig: int = 1,
-                   var_true: str | tuple = None,
-                   var_sig: str | tuple = None) -> tuple[dict, np.ndarray]:
+                   xsec_inputs: XSecInputs | None = None,
+                   expand:bool=False,
+                   multisim_nuniv=100) -> tuple[dict, np.ndarray]:
     """Compute only systematic universe histograms (no covariance/correlation matrices).
 
     Returns
@@ -228,42 +240,65 @@ def get_syst_hists(indf: pd.DataFrame,
     nbins = len(bins)
     syst_dict = {}
 
-    # unisim
-    for col in tqdm(unisim_col, desc='Running through unisims'):
-        weights = indf[col].values.astype(np.float64)
-        weights[np.isnan(weights)] = 1.0
-        weights *= scaling
+    if expand:
+        # use morph and ps1 as 1-sigma variations to create multisim universes with random throws
+        for col in tqdm(unisim_col+multisig_col, desc='Running through unisims'):
+            i_vals = np.arange(multisim_nuniv)
+            seed_strs = np.char.add(np.char.add("".join(list(col)), i_vals.astype(str)), str(id(indf)))
+            seed_ints = np.fromiter((hash(s) % (2**32) for s in seed_strs), dtype=np.uint32, count=len(i_vals))
+            scalars = np.array([np.random.default_rng(int(s)).normal(0, 1) for s in seed_ints], dtype=np.float64)
 
-        if is_xsec_rate(col, xsec, sigdf, var_true, var_sig):
-            sig_weights = sigdf[col[2:]].values.astype(np.float64) * scale_sig
-            hists = get_evtrate(indf, sigdf,
-                                weights.reshape(-1, 1),
-                                sig_weights.reshape(-1, 1),
-                                scale_sig,
-                                var, var_true, var_sig, bins)
-        else:
-            hists = np.apply_along_axis(get_hist1d, 0, weights, indf[var], bins).reshape((nbins - 1, -1))
+            weights_mlt = _expand_weights(indf, col, multisim_nuniv, scalars=scalars)
+            weights_mlt *= scaling[:, np.newaxis]
+            if is_xsec(col, xsec_inputs):
+                true_weights_mlt = _expand_weights(
+                    xsec_inputs.true_signal_df,
+                    col[2:],
+                    multisim_nuniv,
+                    scalars=scalars,
+                ) * xsec_inputs.true_signal_scale
+                hists = get_xsec_hists(indf, xsec_inputs, weights_mlt, true_weights_mlt, bins, var)
+            else:
+                hists = np.apply_along_axis(get_hist1d, 0, weights_mlt, indf[var], bins)
 
-        syst_dict[col[2]] = {'hists': hists}
+            syst_dict[col[2]] = {'hists': hists}
+    else: 
+        # unisim
+        for col in tqdm(unisim_col, desc='Running through unisims'):
+            weights = indf[col].values.astype(np.float64)
+            weights[np.isnan(weights)] = 1.0
+            weights *= scaling
 
-    # multisig (ps1/ms1 pairs)
-    for col in tqdm(multisig_col, desc='Running through multisig'):
-        ps1_col = col
-        ms1_col = tuple([x if x != "ps1" else "ms1" for x in list(col)])
+            if is_xsec(col, xsec_inputs):
+                true_signal_weights = xsec_inputs.true_signal_df[col[2:]].values.astype(np.float64) * xsec_inputs.true_signal_scale
+                hists = get_xsec_hists(indf, xsec_inputs,
+                                    weights.reshape(-1, 1),
+                                    true_signal_weights.reshape(-1, 1),
+                                    bins,
+                                    var)
+            else:
+                hists = np.apply_along_axis(get_hist1d, 0, weights, indf[var], bins).reshape((nbins - 1, -1))
 
-        ps1 = np.nan_to_num(indf[ps1_col].values.astype(np.float64), copy=False, nan=1.0)
-        ms1 = np.nan_to_num(indf[ms1_col].values.astype(np.float64), copy=False, nan=1.0)
-        weights = np.stack([ps1, ms1]).T * scaling[:, np.newaxis]
+            syst_dict[col[2]] = {'hists': hists}
 
-        if is_xsec_rate(col, xsec, sigdf, var_true, var_sig):
-            sig_ps1 = np.nan_to_num(sigdf[ps1_col[2:]].values.astype(np.float64), copy=False, nan=1.0)
-            sig_ms1 = np.nan_to_num(sigdf[ms1_col[2:]].values.astype(np.float64), copy=False, nan=1.0)
-            sig_weights = np.stack([sig_ps1, sig_ms1]).T * scale_sig
-            hists = get_evtrate(indf, sigdf, weights, sig_weights, scale_sig, var, var_true, var_sig, bins)
-        else:
-            hists = np.apply_along_axis(get_hist1d, 0, weights, indf[var], bins)
+        # multisig (ps1/ms1 pairs)
+        for col in tqdm(multisig_col, desc='Running through multisig'):
+            ps1_col = col
+            ms1_col = tuple([x if x != "ps1" else "ms1" for x in list(col)])
 
-        syst_dict[col[2]] = {'hists': hists}
+            ps1 = np.nan_to_num(indf[ps1_col].values.astype(np.float64), copy=False, nan=1.0)
+            ms1 = np.nan_to_num(indf[ms1_col].values.astype(np.float64), copy=False, nan=1.0)
+            weights = np.stack([ps1, ms1]).T * scaling[:, np.newaxis]
+
+            if is_xsec(col, xsec_inputs):
+                true_signal_ps1 = np.nan_to_num(xsec_inputs.true_signal_df[ps1_col[2:]].values.astype(np.float64), copy=False, nan=1.0)
+                true_signal_ms1 = np.nan_to_num(xsec_inputs.true_signal_df[ms1_col[2:]].values.astype(np.float64), copy=False, nan=1.0)
+                true_signal_weights = np.stack([true_signal_ps1, true_signal_ms1]).T * xsec_inputs.true_signal_scale
+                hists = get_xsec_hists(indf, xsec_inputs, weights, true_signal_weights, bins, var)
+            else:
+                hists = np.apply_along_axis(get_hist1d, 0, weights, indf[var], bins)
+
+            syst_dict[col[2]] = {'hists': hists}
 
     # multisim
     for col in tqdm(multisim_col, desc='Running through multisims'):
@@ -271,21 +306,13 @@ def get_syst_hists(indf: pd.DataFrame,
         weights[np.isnan(weights)] = 1.0
         weights *= scaling[:, np.newaxis]
 
-        if is_xsec_rate(col, xsec, sigdf, var_true, var_sig):
-            sig_weights = sigdf[col[2:]].values.astype(np.float64) * scale_sig
-            hists = get_evtrate(indf, sigdf, weights, sig_weights, scale_sig, var, var_true, var_sig, bins)
+        if is_xsec(col, xsec_inputs):
+            true_signal_weights = xsec_inputs.true_signal_df[col[2:]].values.astype(np.float64) * xsec_inputs.true_signal_scale
+            hists = get_xsec_hists(indf, xsec_inputs, weights, true_signal_weights.reshape(-1, 1), bins, var)
         else:
             hists = np.apply_along_axis(get_hist1d, 0, weights, indf[var], bins)
 
         syst_dict[col[2]] = {'hists': hists}
-
-    if normalize:
-        for key in syst_dict:
-            h = syst_dict[key]['hists']
-            hsum = np.sum(h, axis=0)
-            syst_dict[key]['hists'] = np.divide(
-                h, hsum, out=np.zeros_like(h), where=hsum > 0
-            ) * cv_counts
 
     return syst_dict, cv
 
@@ -353,7 +380,7 @@ def mcstat(indf, nuniv:int=100 , cols: list=['__ntuple','entry','rec.slc..index'
     return df.join(mcstat_univ_wgt)
 
 
-def get_detvar_systs(detvar_dict,stage,var, bins,normalize=False,**kwargs):
+def get_detvar_systs(detvar_dict,var,bins,event_type: str | None = "all",**selection_kwargs):
     """Compute detector variation systematic covariance matrices.
     
     Parameters
@@ -369,10 +396,7 @@ def get_detvar_systs(detvar_dict,stage,var, bins,normalize=False,**kwargs):
         Column name for the variable to histogram.
     bins : np.ndarray
         Bin edges for histogramming.
-    normalize : bool, optional
-        If True, area-normalize each universe histogram to match CV total counts.
-        Default is False.
-    **kwargs
+    **selection_kwargs
         Additional keyword arguments forwarded to the `select` function.
 
     Returns
@@ -401,28 +425,34 @@ def get_detvar_systs(detvar_dict,stage,var, bins,normalize=False,**kwargs):
         this_dv   = this_dict['dv_df']
         this_cv   = this_dict['cv_df']
         # this is for flux-normalizing
-        this_norm = this_dict['flux_pot_norm']
+        # re-normalize in case flux calculation has changed
+        this_norm = integrated_flux*(this_dict['pot']/1e6)
         
         # lexsort to avoid performance warning on columns 
         # forward selection kwargs to select function
-        cv_hist = get_hist1d(data=ensure_lexsorted(select(this_cv,savedict=False,stage=stage,**kwargs),axis=1)[var],bins=bins)
+        if selection_kwargs:
+            cv_sel = select(this_cv, savedict=False, **selection_kwargs)
+        else:
+            cv_sel = this_cv
+        cv_sel = apply_event_mask(ensure_lexsorted(cv_sel, axis=1), event_type)
+        cv_hist = get_hist1d(data=cv_sel[var],bins=bins)/this_norm
 
         # support both unisim (single df) and multisim (list of dfs)
         dv_dfs = this_dv if isinstance(this_dv, list) else [this_dv]
+        if selection_kwargs:
+            dv_dfs = [select(dv, savedict=False, **selection_kwargs) for dv in dv_dfs]
         dv_hists = np.column_stack([
-            get_hist1d(data=ensure_lexsorted(select(dv,savedict=False,stage=stage,**kwargs),axis=1)[var],bins=bins)
+            get_hist1d(
+                data=apply_event_mask(ensure_lexsorted(dv, axis=1),event_type)[var],bins=bins)
             for dv in dv_dfs
-        ])  # shape: (nbins, nuniv)
-
-        if normalize:
-            dv_hists = dv_hists / np.sum(dv_hists, axis=0) * np.sum(cv_hist)
+        ])/this_norm  # shape: (nbins, nuniv)
         
-        cov, cov_frac, corr = calc_matrices(var_arr=dv_hists/this_norm, cv=cv_hist/this_norm)
-        matrices_dict[key] = {'hists': dv_hists/this_norm,
+        cov, cov_frac, corr = calc_matrices(var_arr=dv_hists, cv=cv_hist)
+        matrices_dict[key] = {'hists': dv_hists,
                               'cov': cov,
                               'cov_frac': cov_frac,
                               'corr': corr, 
-                              'hist_cv': cv_hist/this_norm}
+                              'hist_cv': cv_hist}
     return matrices_dict
 
 
@@ -441,7 +471,7 @@ def get_syst_df(dicts: list, cv_hist: np.ndarray) -> pd.DataFrame:
     pd.DataFrame
         DataFrame with columns: key, category, unc, sum, top5
     """
-    categories = ["GENIE", "Flux", "MCstat", "DetVar"]
+    categories = ["GENIE", "Flux", "MCstat", "DetVar",'Geant4']
 
     def classify_detvar_subcategory(detvar_key: str) -> str:
         """Map detector variation names to analysis subcategories."""
@@ -466,7 +496,8 @@ def get_syst_df(dicts: list, cv_hist: np.ndarray) -> pd.DataFrame:
         "GENIE":  lambda key: "_".join(key.split("_")[4:]),  
         "Flux":   lambda key: key.split("_")[0],
         "MCstat": lambda key: key,
-        "DetVar": lambda key: "".join(key.split("_")[1:])
+        "DetVar": lambda key: "".join(key.split("_")[1:]),
+        "Geant4": lambda key: key.split("_")[1],
     }
     
     records = []
