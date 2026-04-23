@@ -102,12 +102,12 @@ tmax_period5c = tmax_run1.timestamp() * 1e9
 #=======================================================================#
 
 #MC neutrino
-mcbnb_offset_calib = -196.044 #ns
+mcbnb_offset_calib = -371 #ns
 mcbnb_period_calib = 18.936 #ns
 #-----------------------------------------------------------------------#
 
 #MC HNL
-mchnl_offset_calib = -505.4 #ns
+mchnl_offset_calib =  -371 #ns
 mchnl_period_calib = 18.936 #ns
 #-----------------------------------------------------------------------#
 
@@ -161,3 +161,21 @@ odict = {
          , "5ac": -522.738 #-522.848#-522.57 #5ac
          } 
 #=======================================================================#
+#Tag v10_14_02 BugFix
+#=======================================================================#
+
+def bugfix_mcbnb_bfm_flashtime(indf):
+
+    #flash time = flash time - 135 ns
+    #missing some chunk of the flux window propagation
+    mc_pds_cable_length = 0.135 #us
+    dt_fluxwindow = (12e2/29.97) / 1000 #10m / c, us to ns
+    indf[('slc', 'barycenterFM', 'flashTime', '', '', '')] = indf[('slc', 'barycenterFM', 'flashTime', '', '', '')] + mc_pds_cable_length + dt_fluxwindow
+    return indf
+
+def bugfix_mchnl_bfm_flashtime(indf):
+
+    #flash time = flash time - 135 ns
+    mc_pds_cable_length = 0.135 #us
+    indf[('slc', 'barycenterFM', 'flashTime', '', '', '')] = indf[('slc', 'barycenterFM', 'flashTime', '', '', '')] - mc_pds_cable_length
+    return indf
