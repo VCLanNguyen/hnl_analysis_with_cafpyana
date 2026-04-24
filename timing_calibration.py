@@ -102,13 +102,13 @@ tmax_period5c = tmax_run1.timestamp() * 1e9
 #=======================================================================#
 
 #MC neutrino
-mcbnb_offset_calib = -371 #ns
+mcbnb_offset_calib = -368.945 #ns
 mcbnb_period_calib = 18.936 #ns
 #-----------------------------------------------------------------------#
 
 #MC HNL
-mchnl_offset_calib =  -371 #ns
-mchnl_period_calib = 18.936 #ns
+mchnl_offset_calib =  mcbnb_offset_calib
+mchnl_period_calib = mcbnb_period_calib
 #-----------------------------------------------------------------------#
 
 #Data Offbeam
@@ -167,10 +167,10 @@ odict = {
 def bugfix_mcbnb_bfm_flashtime(indf):
 
     #flash time = flash time - 135 ns
-    #missing some chunk of the flux window propagation
+    #offset by exactly 2 period of beam cycles?
     mc_pds_cable_length = 0.135 #us
-    dt_fluxwindow = (12e2/29.97) / 1000 #10m / c, us to ns
-    indf[('slc', 'barycenterFM', 'flashTime', '', '', '')] = indf[('slc', 'barycenterFM', 'flashTime', '', '', '')] + mc_pds_cable_length + dt_fluxwindow
+    period = 18.936/1000 #ns to us
+    indf[('slc', 'barycenterFM', 'flashTime', '', '', '')] = indf[('slc', 'barycenterFM', 'flashTime', '', '', '')] + mc_pds_cable_length + period*2
     return indf
 
 def bugfix_mchnl_bfm_flashtime(indf):
