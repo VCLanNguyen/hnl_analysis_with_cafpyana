@@ -562,7 +562,7 @@ def plot_mc_hnl_data(mc_df: pd.DataFrame,
 
     data_hist, data_err, data_plot = data_plot_overlay(**data_args)
     mc_bins, mc_steps, mc_err, mc_dict = plot_var(**mc_args)
-    hnl_bins, hnl_steps, hnl_err, hnl_dict = plot_var(**hnl_args)
+    _, hnl_steps, hnl_err, hnl_dict = plot_var(**hnl_args)
 
     xmin, xmax = ax_main.get_xlim()
     
@@ -608,5 +608,20 @@ def plot_mc_hnl_data(mc_df: pd.DataFrame,
 
     if savefig!="":
         plt.savefig(savefig,bbox_inches='tight')
+
+    #add things to dict to be returned for later use if needed
+    mc_dict['bins'] = mc_bins
+    mc_dict['counts'] = mc_steps[-1][1:]  # last step contains the total MC counts
+    mc_dict['total_err'] = mc_err
+
+    hnl_dict['bins'] = mc_bins
+    hnl_dict['counts'] = hnl_steps[-1][1:]  # last step contains the total HNL counts
+    hnl_dict['total_err'] = hnl_err
+
+    dt_dict = {
+        'bins': mc_bins,
+        'counts': data_hist,
+        'total_err': data_err,
+    }
     
-    return fig, ax_main, ax_sub, mc_dict, hnl_dict
+    return fig, ax_main, ax_sub, mc_dict, hnl_dict, dt_dict
