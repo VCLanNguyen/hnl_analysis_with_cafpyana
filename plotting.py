@@ -625,3 +625,73 @@ def plot_mc_hnl_data(mc_df: pd.DataFrame,
     }
     
     return fig, ax_main, ax_sub, mc_dict, hnl_dict, dt_dict
+
+def plot_mc_hnl(mc_df: pd.DataFrame,
+                hnl_df: pd.DataFrame,
+                var: str | tuple,
+                bins: list[float] | np.ndarray,
+                figsize: tuple[int, int] = (7, 5),
+                savefig: str = "",
+                scale_nu: float = 1.0,
+                scale_hnl: float = 1.0,
+                log_y: bool = False,
+                show_fom: bool = False,
+                fom_nsigma: float = 1.0,
+                **kwargs) -> tuple[plt.Figure, plt.Axes]:
+    """MC BNB stacked histogram + HNL step overlay, without data points."""
+    if show_fom:
+        fig = plt.figure(figsize=(figsize[0], figsize[1] + 2))
+        gs  = GridSpec(2, 1, height_ratios=[3, 1], hspace=0.35)
+        ax  = fig.add_subplot(gs[0])
+        ax_fom = fig.add_subplot(gs[1])
+    else:
+        fig, ax = plt.subplots(figsize=figsize)
+        ax_fom  = None
+
+    mc_args  = dict(df=mc_df,  var=var, bins=bins, ax=ax, hist_filled=True,  error_legend=False, scale=scale_nu,  **kwargs)
+    hnl_args = dict(df=hnl_df, var=var, bins=bins, ax=ax, hist_filled=False, error_legend=True,  scale=scale_hnl, **kwargs)
+
+    mc_bins, mc_steps, mc_err, mc_dict = plot_var(**mc_args)
+    hnl_bins, hnl_steps, hnl_err, _   = plot_var(**hnl_args)
+
+    cut_val = kwargs.get('cut_val', None)
+    if cut_val is not None:
+        for cut in cut_val:
+            ax.axvline(cut, color='black', linestyle='--', linewidth=2, alpha=0.5, zorder=1e2)
+
+    if log_y:
+        ax.set_yscale('log')
+
+    if show_fom:
+        S_bins = hnl_steps[-1][1:]
+        B_bins = mc_steps[-1][1:]
+        bin_centers = 0.5 * (np.asarray(bins)[1:] + np.asarray(bins)[:-1])
+        a = fom_nsigma
+        S_gt = np.cumsum(S_bins[::-1])[::-1]
+        B_gt = np.cumsum(B_bins[::-1])[::-1]
+        S_lt = np.cumsum(S_bins)
+        B_lt = np.cumsum(B_bins)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            fom_gt = np.where(B_gt > 0, S_gt / (a / 2 + np.sqrt(B_gt)), 0)
+            fom_lt = np.where(B_lt > 0, S_lt / (a / 2 + np.sqrt(B_lt)), 0)
+        best_gt = bin_centers[np.argmax(fom_gt)]
+        best_lt = bin_centers[np.argmax(fom_lt)]
+        ax_fom.plot(bin_centers, fom_gt, color='steelblue',  label=f'keep > x  (best={best_gt:.3g})')
+        ax_fom.plot(bin_centers, fom_lt, color='darkorange', label=f'keep < x  (best={best_lt:.3g})')
+        ax_fom.axvline(best_gt, color='steelblue',  linestyle='--', linewidth=1, alpha=0.7)
+        ax_fom.axvline(best_lt, color='darkorange', linestyle='--', linewidth=1, alpha=0.7)
+        ax_fom.set_ylabel(f'Punzi FOM\n(a={a:.0f})')
+        ax_fom.set_xlim(ax.get_xlim())
+        ax_fom.legend(fontsize='small', frameon=False)
+        ax_fom.set_xlabel(ax.get_xlabel() or str(var))
+        ax.set_xlabel('')
+        if cut_val is not None:
+            for cut in cut_val:
+                ax_fom.axvline(cut, color='black', linestyle='--', linewidth=2, alpha=0.5)
+
+    if savefig != "":
+        plt.savefig(savefig, bbox_inches='tight')
+
+    if show_fom:
+        return fig, ax, ax_fom
+    return fig, ax

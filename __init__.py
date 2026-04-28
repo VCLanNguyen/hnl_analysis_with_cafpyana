@@ -12,6 +12,8 @@ from . import syst
 from . import selection
 from . import classes
 from . import funcs
+from . import new_variables
+from . import bdt
 
 from .constants import *
 from .utils import *
@@ -23,6 +25,8 @@ from .syst import *
 from .selection import *
 from .classes import *
 from .funcs import *
+from .new_variables import *
+from .bdt import *
 
 # This allows both:
 # import nueana; nueana.cutPreselection(df)
