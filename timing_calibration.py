@@ -1,5 +1,6 @@
 from datetime import datetime
 import numpy as np
+import pandas as pd
 
 
 #=======================================================================#
@@ -64,7 +65,7 @@ def data_correct_good(indf, good_dict, odict, pdict):
         data_first_peak = odict[k]
         data_period = pdict[k] 
 
-        dfchunk = tc.timing_correction(df_chunk, period=data_period, t0_offset=data_first_peak, prefix='calib', ifData=True)
+        dfchunk = timing_correction(df_chunk, period=data_period, t0_offset=data_first_peak, prefix='calib', ifData=True)
         
         df_list.append(df_chunk)
 
