@@ -26,6 +26,53 @@ def timing_correction(indf, period=18.936, t0_offset=0, prefix='', ifData=False)
     return indf
 
 #=======================================================================#
+# Drop bad period data
+#=======================================================================#
+def data_filter_bad(indf, bad_dict):
+
+    nfilter = 0
+
+    for k,v in bad_dict.items():
+        tmin = v[0]
+        tmax = v[1]
+
+        mask = (indf['tdcRwm'].astype(np.int64) >= tmin) & (indf['tdcRwm'].astype(np.int64) <= tmax)
+        nfilter += (len(indf[mask]))
+        indf = indf[~mask]
+
+    print(' Remove {:.0f} slices'.format(nfilter))
+
+    return indf
+
+#=======================================================================#
+# Correct good period-by-period
+#=======================================================================#
+def data_correct_good(indf, good_dict, odict, pdict):
+
+    ncorrect = 0
+    df_list = []
+
+    for k,v in good_dict.items():
+        tmin = v[0]
+        tmax = v[1]
+
+        mask = (indf['tdcRwm'].astype(np.int64) >= tmin) & (indf['tdcRwm'].astype(np.int64) <= tmax)
+
+        df_chunk = indf[mask]
+        ncorrect += (len(df_chunk))
+
+        data_first_peak = odict[k]
+        data_period = pdict[k] 
+
+        dfchunk = tc.timing_correction(df_chunk, period=data_period, t0_offset=data_first_peak, prefix='calib', ifData=True)
+        
+        df_list.append(df_chunk)
+
+    print(' Correct {:.0f} slices'.format(ncorrect))
+
+    return pd.concat(df_list)
+
+#=======================================================================#
 # Run 1 Timeline
 #=======================================================================#
 

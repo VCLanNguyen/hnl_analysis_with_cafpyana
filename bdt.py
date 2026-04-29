@@ -48,6 +48,31 @@ FEAT_2SHW = {
     ('slc', 'm_alt', '', '', '', ''): 'm_alt',
 }
 
+def score_bdt(df, model, feat_dict):
+    """Apply a trained BDT to a new DataFrame and return the scores.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Slice-level DataFrame (same format as used in training).
+    model : xgb.XGBClassifier
+        Trained model (from train_bdt or load_bdt).
+    feat_dict : dict
+        Column tuple → feature name mapping (from load_bdt or train_bdt).
+
+    Returns
+    -------
+    scores : np.ndarray
+        BDT score for each row in df.
+    """
+    flat = df.reset_index()
+    avail = [col for col in feat_dict if col in flat.columns]
+    missing = [feat_dict[col] for col in feat_dict if col not in avail]
+    if missing:
+        print(f"Warning: missing features (set to NaN): {missing}")
+
+    X = flat[avail].values.astype(float)
+    return model.predict_proba(X)[:, 1]
 
 def train_bdt(hnl_df,
               sm_df,

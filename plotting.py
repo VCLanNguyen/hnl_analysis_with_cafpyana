@@ -652,7 +652,7 @@ def plot_mc_hnl(mc_df: pd.DataFrame,
     hnl_args = dict(df=hnl_df, var=var, bins=bins, ax=ax, hist_filled=False, error_legend=True,  scale=scale_hnl, **kwargs)
 
     mc_bins, mc_steps, mc_err, mc_dict = plot_var(**mc_args)
-    hnl_bins, hnl_steps, hnl_err, _   = plot_var(**hnl_args)
+    _, hnl_steps, hnl_err, hnl_dict   = plot_var(**hnl_args)
 
     cut_val = kwargs.get('cut_val', None)
     if cut_val is not None:
@@ -689,9 +689,18 @@ def plot_mc_hnl(mc_df: pd.DataFrame,
             for cut in cut_val:
                 ax_fom.axvline(cut, color='black', linestyle='--', linewidth=2, alpha=0.5)
 
+    #add things to dict to be returned for later use if needed
+    mc_dict['bins'] = mc_bins
+    mc_dict['counts'] = mc_steps[-1][1:]  # last step contains the total MC counts
+    mc_dict['total_err'] = mc_err
+
+    hnl_dict['bins'] = mc_bins
+    hnl_dict['counts'] = hnl_steps[-1][1:]  # last step contains the total HNL counts
+    hnl_dict['total_err'] = hnl_err
+
     if savefig != "":
         plt.savefig(savefig, bbox_inches='tight')
 
     if show_fom:
-        return fig, ax, ax_fom
-    return fig, ax
+        return fig, ax, ax_fom, mc_dict, hnl_dict
+    return fig, ax, mc_dict, hnl_dict
