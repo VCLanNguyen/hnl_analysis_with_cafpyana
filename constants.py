@@ -8,6 +8,7 @@ __all__ = [
     'generic_categories', 'generic_dict',
     'pdg_categories', 'pdg_dict',
     'mode_categories', 'mode_dict',
+    'category_dict_signal',
     'nue_flux', 'flux_vals', 'integrated_flux',
     'RHO', 'N_A', 'M_AR', 'V_SBND', 'NTARGETS',
     'POT_NORM_UNC', 'NTARGETS_UNC',
@@ -66,6 +67,29 @@ mode_categories = {
 }
 mode_dict = {k: v["value"] for k, v in mode_categories.items() if v["value"] is not None}
 
+category_dict_signal = {
+    'GENIE':        {'color': 'C0',        'label': 'GENIE', 'line': '-'},
+    'Flux':         {'color': 'seagreen',  'label': 'Flux', 'line': '-'},
+    'DetVar':       {'color': 'orange',    'label': 'Detector Variations', 'line': '-'},
+    'Geant4':       {'color': 'red',       'label': 'G4', 'line': '-'},
+    'BeamExposure': {'color': 'deeppink',  'label': 'Beam Exposure', 'line': '-'},
+    'NTargets':     {'color': 'purple',    'label': 'NTargets', 'line': '-'},
+    'Cosmic':       {'color': 'sienna',    'label': 'Cosmic', 'line': '-'},
+    'MCstat':       {'color': 'slategray', 'label': 'MC statistics', 'line': '-'},
+    'Datastat':     {'color': 'gray',      'label': 'Data statistics\n[proj. 1e20 POT]', 'line': '--'},
+}
+
+category_dict_control = {
+    'GENIE' : {'color': 'navy', 'label': 'GENIE', 'line': '-'},
+    'Flux' : {'color': 'darkgreen', 'label': 'Flux', 'line': '-'},
+    'DetVar' : {'color': 'darkorange', 'label': 'Detector Variations', 'line': '-'},
+    'Geant4' : {'color': 'firebrick', 'label': 'G4', 'line': '-'},
+    'BeamExposure' : {'color': 'mediumvioletred', 'label': 'Beam Exposure', 'line': '-'},
+    'NTargets' : {'color': 'rebeccapurple', 'label': 'NTargets', 'line': '-'},
+    'Cosmic' : {'color': 'saddlebrown', 'label': 'Cosmic', 'line': '-'},
+    'MCstat' : {'color': 'slategray', 'label': 'MC statistics', 'line': '-'},
+    'Datastat' : {'color': 'gray', 'label': 'Data statistics\n[proj. 1e20 POT]', 'line': '--'},
+}
 # flux file, units: /m^2/10^6 POT, 50 MeV bins
 with uproot.open(config.FLUX_FILE) as f:
     nue_flux = f["flux_sbnd_nue"].to_numpy()
