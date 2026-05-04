@@ -233,77 +233,80 @@ def get_syst_hists(reco_df: pd.DataFrame,
     syst_dict = {}
     
     # unisim
-    for col in tqdm(unisim_col, desc='Running through unisims'):
-        weights = reco_df[col].values.astype(np.float64)
-        weights[np.isnan(weights)] = 1.0
-        weights[(weights>10) | (weights < 0)] = 1.0 
-        weights *= scaling
+    if len(unisim_col)>0:
+        for col in tqdm(unisim_col, desc='Running through unisims'):
+            weights = reco_df[col].values.astype(np.float64)
+            weights[np.isnan(weights)] = 1.0
+            weights[(weights>10) | (weights < 0)] = 1.0 
+            weights *= scaling
 
-        response = None
-        if is_xsec(col, xsec_inputs):
-            true_signal_weights = xsec_inputs.true_signal_df[col[2:]].values.astype(np.float64) * xsec_inputs.true_signal_scale
-            result = get_xsec_hists(reco_df, xsec_inputs,
-                                    weights.reshape(-1, 1),
-                                    true_signal_weights.reshape(-1, 1),
-                                    bins,
-                                    reco_var,
-                                    return_response=save_response)
-            hists, response = result if save_response else (result, None)
-        else:
-            hists = np.apply_along_axis(get_hist1d, 0, weights, reco_df[reco_var], bins).reshape((nbins - 1, -1))
+            response = None
+            if is_xsec(col, xsec_inputs):
+                true_signal_weights = xsec_inputs.true_signal_df[col[2:]].values.astype(np.float64) * xsec_inputs.true_signal_scale
+                result = get_xsec_hists(reco_df, xsec_inputs,
+                                        weights.reshape(-1, 1),
+                                        true_signal_weights.reshape(-1, 1),
+                                        bins,
+                                        reco_var,
+                                        return_response=save_response)
+                hists, response = result if save_response else (result, None)
+            else:
+                hists = np.apply_along_axis(get_hist1d, 0, weights, reco_df[reco_var], bins).reshape((nbins - 1, -1))
 
-        entry = {'hists': hists}
-        if response is not None:
-            entry['response'] = response
-        syst_dict[col[2]] = entry
+            entry = {'hists': hists}
+            if response is not None:
+                entry['response'] = response
+            syst_dict[col[2]] = entry
 
     # multisig (ps1/ms1 pairs)
-    for col in tqdm(multisig_col, desc='Running through multisig'):
-        ps1_col = col
-        ms1_col = tuple([x if x != "ps1" else "ms1" for x in list(col)])
+    if len(multisig_col)>0:
+        for col in tqdm(multisig_col, desc='Running through multisig'):
+            ps1_col = col
+            ms1_col = tuple([x if x != "ps1" else "ms1" for x in list(col)])
 
-        ps1 = np.nan_to_num(reco_df[ps1_col].values.astype(np.float64), copy=False, nan=1.0)
-        ms1 = np.nan_to_num(reco_df[ms1_col].values.astype(np.float64), copy=False, nan=1.0)
-        weights = np.stack([ps1, ms1]).T 
-        weights[(weights>10) | (weights < 0)] = 1.0 
-        weights *= scaling[:, np.newaxis]
-        
-        response = None
-        if is_xsec(col, xsec_inputs):
-            true_signal_ps1 = np.nan_to_num(xsec_inputs.true_signal_df[ps1_col[2:]].values.astype(np.float64), copy=False, nan=1.0)
-            true_signal_ms1 = np.nan_to_num(xsec_inputs.true_signal_df[ms1_col[2:]].values.astype(np.float64), copy=False, nan=1.0)
-            true_signal_weights = np.stack([true_signal_ps1, true_signal_ms1]).T * xsec_inputs.true_signal_scale
-            result = get_xsec_hists(reco_df, xsec_inputs, weights, true_signal_weights, bins, reco_var,
-                                    return_response=save_response)
-            hists, response = result if save_response else (result, None)
-        else:
-            hists = np.apply_along_axis(get_hist1d, 0, weights, reco_df[reco_var], bins)
+            ps1 = np.nan_to_num(reco_df[ps1_col].values.astype(np.float64), copy=False, nan=1.0)
+            ms1 = np.nan_to_num(reco_df[ms1_col].values.astype(np.float64), copy=False, nan=1.0)
+            weights = np.stack([ps1, ms1]).T 
+            weights[(weights>10) | (weights < 0)] = 1.0 
+            weights *= scaling[:, np.newaxis]
+            
+            response = None
+            if is_xsec(col, xsec_inputs):
+                true_signal_ps1 = np.nan_to_num(xsec_inputs.true_signal_df[ps1_col[2:]].values.astype(np.float64), copy=False, nan=1.0)
+                true_signal_ms1 = np.nan_to_num(xsec_inputs.true_signal_df[ms1_col[2:]].values.astype(np.float64), copy=False, nan=1.0)
+                true_signal_weights = np.stack([true_signal_ps1, true_signal_ms1]).T * xsec_inputs.true_signal_scale
+                result = get_xsec_hists(reco_df, xsec_inputs, weights, true_signal_weights, bins, reco_var,
+                                        return_response=save_response)
+                hists, response = result if save_response else (result, None)
+            else:
+                hists = np.apply_along_axis(get_hist1d, 0, weights, reco_df[reco_var], bins)
 
-        entry = {'hists': hists}
-        if response is not None:
-            entry['response'] = response
-        syst_dict[col[2]] = entry
+            entry = {'hists': hists}
+            if response is not None:
+                entry['response'] = response
+            syst_dict[col[2]] = entry
 
     # multisim
-    for col in tqdm(multisim_col, desc='Running through multisims'):
-        weights = reco_df[col].values.astype(np.float64)
-        weights[np.isnan(weights)] = 1.0
-        weights[(weights>10) | (weights<0)] = 1
-        weights *= scaling[:, np.newaxis]
+    if len(multisim_col)>0: 
+        for col in tqdm(multisim_col, desc='Running through multisims'):
+            weights = reco_df[col].values.astype(np.float64)
+            weights[np.isnan(weights)] = 1.0
+            weights[(weights>10) | (weights<0)] = 1
+            weights *= scaling[:, np.newaxis]
 
-        response = None
-        if is_xsec(col, xsec_inputs):
-            true_signal_weights = xsec_inputs.true_signal_df[col[2:]].values.astype(np.float64) * xsec_inputs.true_signal_scale
-            result = get_xsec_hists(reco_df, xsec_inputs, weights, true_signal_weights, bins, reco_var,
-                                    return_response=save_response)
-            hists, response = result if save_response else (result, None)
-        else:
-            hists = np.apply_along_axis(get_hist1d, 0, weights, reco_df[reco_var], bins)
+            response = None
+            if is_xsec(col, xsec_inputs):
+                true_signal_weights = xsec_inputs.true_signal_df[col[2:]].values.astype(np.float64) * xsec_inputs.true_signal_scale
+                result = get_xsec_hists(reco_df, xsec_inputs, weights, true_signal_weights, bins, reco_var,
+                                        return_response=save_response)
+                hists, response = result if save_response else (result, None)
+            else:
+                hists = np.apply_along_axis(get_hist1d, 0, weights, reco_df[reco_var], bins)
 
-        entry = {'hists': hists}
-        if response is not None:
-            entry['response'] = response
-        syst_dict[col[2]] = entry
+            entry = {'hists': hists}
+            if response is not None:
+                entry['response'] = response
+            syst_dict[col[2]] = entry
 
     return syst_dict, cv
 
