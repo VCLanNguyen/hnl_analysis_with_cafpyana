@@ -240,8 +240,7 @@ df_all             = apply_event_mask(df, "all")          # no filter
 
 **Data/MC ratio panel and chi-squared annotation in `plot_mc_data()`**
 
-`plot_mc_data()` now automatically draws a data/MC ratio subplot below the main stack
-and annotates the main axis with the integrated Data/MC ratio and a chi-squared
+`plot_mc_data()` now annotates the main axis with the integrated Data/MC ratio and a chi-squared
 goodness-of-fit test (using `scipy.stats.chi2` when available). Both can be suppressed:
 
 ```python
