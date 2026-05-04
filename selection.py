@@ -112,7 +112,7 @@ def select(indf,
            max_dedx=2.5,
            min_opening_angle=0.03,
            max_opening_angle=0.15,
-           min_shower_length=0.1,
+           min_shower_length=10,
            max_shower_length=200,
            min_direction=-1,
            max_direction=1,
@@ -321,11 +321,11 @@ def define_signal(indf: pd.DataFrame, prefix=None):
     else:
         signal = np.full(len(nudf), -1, dtype=np.int16)
 
-    signal[whereFV & (mcdf.iscc == 1) & (abs(mcdf.pdg) == 14) & (mcdf.npi0 > 0)]  = signal_dict["numuCCpi0"]
-    signal[whereFV & (mcdf.iscc == 0) & (mcdf.npi0 > 0)]                           = signal_dict["NCpi0"]
-    signal[whereFV & (mcdf.iscc == 1) & (abs(mcdf.pdg) == 12)]                     = signal_dict["othernueCC"]
-    signal[whereFV & (mcdf.iscc == 1) & (abs(mcdf.pdg) == 14) & (mcdf.npi0 == 0)] = signal_dict["othernumuCC"]
-    signal[whereFV & (mcdf.iscc == 0) & (mcdf.npi0 == 0)]                          = signal_dict["otherNC"]
+    signal[whereFV & (mcdf.iscc == 1) & (abs(mcdf.pdg) == 14) & (mcdf.npi0 > 0)]    = signal_dict["numuCCpi0"]
+    signal[whereFV & (mcdf.iscc == 0) & (mcdf.npi0 > 0)]                            = signal_dict["NCpi0"]
+    signal[whereFV & (mcdf.iscc == 1) & (abs(mcdf.pdg) == 12)]                      = signal_dict["othernueCC"]
+    signal[whereFV & (mcdf.iscc == 1) & (abs(mcdf.pdg) == 14) & (mcdf.npi0 == 0)]   = signal_dict["othernumuCC"]
+    signal[whereFV & (mcdf.iscc == 0) & (mcdf.npi0 == 0)]                           = signal_dict["otherNC"]
     signal[whereAV & (signal < 0)]                                                  = signal_dict["nonFV"]
     signal[whereAV == False]                                                        = signal_dict["dirt"]
     signal[np.isnan(mcdf.E)]                                                        = signal_dict['cosmic']
