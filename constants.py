@@ -48,7 +48,7 @@ pdg_categories = {
     r"$\gamma$":       {"pdg": 22,   "color": "C2"},
     r"$p$":            {"pdg": 2212, "color": "C3"},
     r"$\pi^{+/-}$":    {"pdg": 211,  "color": "darkslateblue"},
-    r"non-$\nu$ $e$":  {"pdg": None, "color": "C4",       "filter": "notprime"},
+    r"non-$\nu$ $e$":  {"pdg": None, "color": "C4",       "filter": "notprim"},
     "cosmic":          {"pdg": None, "color": "darkgray",  "filter": "cosmic"},
     "offbeam":         {"pdg": None, "color": "lightgray", "filter": "offbeam"},
     "other":           {"pdg": None, "color": "sienna",    "filter": "other_nu"},
