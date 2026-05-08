@@ -382,9 +382,8 @@ def mcstat(indf, nuniv:int=100 , cols: list=['__ntuple','entry','rec.slc..index'
 
 def get_detvar_systs(detvar_dict, var, bins,
                      event_type: str | None = "all",
-                     extra_cuts=None,
-                     skip_cuts=None,
-                     **selection_kwargs):
+                     cuts=None,
+                     **select_kwargs):
     """Compute detector variation systematic covariance matrices.
 
     Parameters
@@ -400,18 +399,14 @@ def get_detvar_systs(detvar_dict, var, bins,
         Bin edges for histogramming.
     event_type : str or None, default 'all'
         Event mask applied after selection (see :func:`~nueana.utils.apply_event_mask`).
-    extra_cuts : callable or list of callable, optional
-        Additional cut function(s) applied after the standard selection pipeline.
-        Each must accept a DataFrame and return a boolean mask, e.g.
-        ``lambda df: abs(df.x) > 10``. Forwarded to :func:`~nueana.selection.select`.
-    skip_cuts : list of str, optional
-        Named selection stages to skip. Forwarded to :func:`~nueana.selection.select`.
-        Valid names: ``'preselection'``, ``'flash matching'``, ``'shower energy'``,
-        ``'muon rejection'``, ``'conversion gap'``, ``'dEdx'``,
-        ``'opening angle'``, ``'shower length'``.
-    **selection_kwargs
-        Any other keyword arguments forwarded to :func:`~nueana.selection.select`
-        (e.g. ``min_dedx``, ``max_track_length``).
+    cuts : list of CutSpec, optional
+        Custom cut sequence forwarded to :func:`~nueana.selection.select`.
+        Defaults to ``DEFAULT_CUTS`` when None. Build custom lists with
+        :func:`~nueana.selection.modify_cut`, :func:`~nueana.selection.drop_cuts`,
+        or :class:`~nueana.selection.CutSpec`.
+    **select_kwargs
+        Additional keyword arguments forwarded to :func:`~nueana.selection.select`
+        (e.g. ``stage``, ``spring``, ``shower_scale``).
 
     Returns
     -------
@@ -428,8 +423,8 @@ def get_detvar_systs(detvar_dict, var, bins,
     If ``this_dict['dv_df']`` is a single DataFrame the variation is treated as
     a unisim; if it is a list of DataFrames it is treated as a multisim.
     """
-    _needs_select = bool(selection_kwargs) or extra_cuts is not None or skip_cuts is not None
-    _sel_kw = dict(savedict=False, extra_cuts=extra_cuts, skip_cuts=skip_cuts, **selection_kwargs)
+    _needs_select = cuts is not None or bool(select_kwargs)
+    _sel_kw = dict(savedict=False, cuts=cuts, **select_kwargs)
 
     matrices_dict = {}
     for i, key in tqdm(enumerate(detvar_dict.keys())):

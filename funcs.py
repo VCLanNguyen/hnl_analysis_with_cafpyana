@@ -341,16 +341,17 @@ def get_intime_cov(selected_df, var, bins,
                    threshold=0.05,
                    event_type: str | None = "all",
                    select_region: str = "signal",
-                   **selection_kwargs):
+                   cuts=None,
+                   **select_kwargs):
     mcint_dfs = load_dfs(config.INTIME_FILE, ['histgenevtdf', 'nuecc'])
     scale = mcbnb_ngen / mcint_dfs['histgenevtdf'].TotalGenEvents.sum()
 
     if select_region == "signal":
-        mcint_df = select(mcint_dfs['nuecc'], savedict=False)
+        mcint_df = select(mcint_dfs['nuecc'], savedict=False, cuts=cuts, **select_kwargs)
     elif select_region == "control":
-        mcint_df = select_sideband(mcint_dfs['nuecc'], savedict=False)
+        mcint_df = select_sideband(mcint_dfs['nuecc'], savedict=False, cuts=cuts, **select_kwargs)
     else:
-        mcint_df = select(mcint_dfs['nuecc'], savedict=False, **selection_kwargs)
+        mcint_df = select(mcint_dfs['nuecc'], savedict=False, cuts=cuts, **select_kwargs)
 
     mcint_df[('flux_pot_norm', '', '', '', '', '')] = scale / (integrated_flux * (mcbnb_pot / 1e6))
     selected_df = apply_event_mask(ensure_lexsorted(selected_df, axis=1), event_type)
@@ -386,14 +387,15 @@ def get_intime_cov(selected_df, var, bins,
     return cov_final
     
 def get_total_cov(reco_df, reco_var, bins, mcbnb_pot,
-                  selection_kwargs=None, projected_pot=1e20,
+                  cuts=None, projected_pot=1e20,
                   mcbnb_ngen: float | None = None,
                   intime_threshold: float = 0.05,
                   event_type: str | None = "all",
                   select_region: str = "signal",
                   uncertainty_keys: list[str] | tuple[str, ...] | set[str] | None = None,
                   xsec_inputs: XSecInputs | None = None,
-                  detvar_dict: dict | None = None):
+                  detvar_dict: dict | None = None,
+                  **select_kwargs):
     """
     Get the total event-rate covariance matrix and systematic dataframe for a
     given variable. Optionally also compute the xsec covariance matrix and
@@ -412,8 +414,14 @@ def get_total_cov(reco_df, reco_var, bins, mcbnb_pot,
         Bin edges
     mcbnb_pot : float
         Monte Carlo BNB POT (or the main sample to normalize to)
-    selection_kwargs : dict, optional
-        Additional selection cuts to apply
+    cuts : list of CutSpec, optional
+        Custom cut sequence forwarded to detector-variation selection.
+        Defaults to ``DEFAULT_CUTS`` when None. Build with
+        :func:`modify_cut`, :func:`drop_cuts`, or :class:`CutSpec`.
+    **select_kwargs
+        Additional keyword arguments forwarded to :func:`~nueana.selection.select`
+        for detector-variation and in-time cosmic selection
+        (e.g. ``stage``, ``spring``, ``shower_scale``).
     projected_pot : float, optional
         Projected POT for data statistics calculation
     mcbnb_ngen : float, optional
@@ -451,9 +459,6 @@ def get_total_cov(reco_df, reco_var, bins, mcbnb_pot,
     4) flat normalization uncertainties
     5) in-time cosmic uncertainty (optional)
     """
-    if selection_kwargs is None:
-        selection_kwargs = {}
-
     allowed_uncertainty_keys = {"rate", "xsec", "detv", "norm", "cosmic"}
     if uncertainty_keys is None:
         selected_uncertainty_keys = {"rate", "detv", "norm", "cosmic"}
@@ -541,7 +546,7 @@ def get_total_cov(reco_df, reco_var, bins, mcbnb_pot,
     # 4) Detector-variation systematics
     # -----------------------------
     if include_detv:
-        detv_syst_dict = get_detvar_systs(detvar_dict, reco_var, bins, event_type=event_type, **selection_kwargs)
+        detv_syst_dict = get_detvar_systs(detvar_dict, reco_var, bins, event_type=event_type, cuts=cuts, **select_kwargs)
         detv_cov = _sum_covariances_from_dicts([detv_syst_dict], rate_hist_cv.size)
         detv_syst_df = get_syst_df([detv_syst_dict], rate_hist_cv)
 
@@ -575,7 +580,7 @@ def get_total_cov(reco_df, reco_var, bins, mcbnb_pot,
     if include_cosmic and mcbnb_ngen is not None:
         intime_cov = get_intime_cov(selected_df=sorted_df, var=reco_var, bins=bins,
                                     mcbnb_ngen=mcbnb_ngen, mcbnb_pot=mcbnb_pot, threshold=intime_threshold,
-                                    event_type=event_type, select_region=select_region, **selection_kwargs)
+                                    event_type=event_type, select_region=select_region, cuts=cuts, **select_kwargs)
 
     # -----------------------------
 # 6) Final assembly + flat normalization/in-time additions
