@@ -5,6 +5,156 @@ top each time changes are merged that other users should know about.
 
 ---
 
+## 2026-05-11 — HDF5 DetVar store, calorimetry detector variations, integral syst percentages
+
+### Bug fixes
+
+**`syst.py` / `plotting.py` — systematic percentage now bin-count independent**
+The fractional uncertainty shown next to each systematic source and in legend labels was
+previously computed as the mean of `sqrt(diag(C)) / cv` over bins. This value changes
+when the binning changes. It is now computed as `sqrt(sum_ij C_ij) / N_total`, which
+equals the fractional uncertainty on the total integral and is independent of how many
+bins are used. Category totals are combined in quadrature across sources.
+
+**`syst.py` — DetVar key classification fixed for HDF5 group names**
+When loading from an HDF5 store the group names are bare (e.g. `pmtgain`, `calo_Ccal`).
+Previously these were not recognised by the `DetVar` category classifier and produced
+`Warning: category not found` for every DetVar key. The output keys are now prefixed
+with `DetVar_` inside `get_detvar_systs`, matching the expected format.
+
+---
+
+### Breaking changes
+
+**DetVar files are now HDF5 (`.h5`) — pickle (`.pkl`) files are no longer read**
+`load_detvar_dicts()` and `get_total_cov()` now use `load_detvar_dict` from the new
+`detvar_store` module. The paths in `config.py` have been updated to point at `.h5`
+files. If you have local overrides pointing at `.pkl` files, update them:
+
+```python
+# Before
+nue.load_detvar_dicts(detvar_files=["mydetvars.pkl"])
+
+# After — pass .h5 paths produced by write_detvar_store()
+nue.load_detvar_dicts(detvar_files=["mydetvars.h5"])
+```
+
+---
+
+### New features
+
+**HDF5-based DetVar store (`detvar_store`)**
+
+Write and read detector-variation DataFrames in a compact HDF5 format:
+
+```python
+from nueana.detvar_store import write_detvar_store, load_detvar_dict, detvar_store_info
+
+# Write
+write_detvar_store(
+    "mydetvars.h5",
+    cv_dict={"cv": cv_file},
+    dv_dict={"pmtgain": [dv_lo, dv_hi], "lyatt": [dv_ly]},
+    cv_map={"pmtgain": "cv", "lyatt": "cv"},
+)
+
+# Read back
+detvar_dict = load_detvar_dict("mydetvars.h5")
+
+# Inspect
+detvar_store_info("mydetvars.h5")
+```
+
+`apply_selection` applies a `select()`-style function to every DV/CV DataFrame inside
+a loaded dict without rewriting the loading loop:
+
+```python
+from nueana.detvar_store import apply_selection
+detvar_dict = apply_selection(detvar_dict, nue.select, min_shower_length=10)
+```
+
+---
+
+**Software calorimetry detector variations (`detvar_recomb`)**
+
+`make_recomb_detvars` produces modified `slc_df` DataFrames for seven shower-energy
+systematics without requiring separate MC samples:
+
+| Variation | Description |
+|-----------|-------------|
+| `calo_Ccal` | ±2 % overall charge-to-energy calibration scale |
+| `calo_alpha` | ±0.008 on recombination parameter A |
+| `calo_beta90` | ±0.008 on recombination parameter B₉₀ |
+| `calo_R` | ±0.02 on recombination ellipticity R |
+| `calo_phi` | Angle-dependent recombination (unisim) |
+| `calo_yz` | Spatial YZ calibration map correction (unisim) |
+| `calo_Ecorr` | ±3 %/1.17 direct energy scale |
+
+```python
+from nueana.detvar_recomb import make_recomb_detvars
+
+dv_dfs = make_recomb_detvars(slc_df)  # dict[str, list[pd.DataFrame]]
+```
+
+Multisim variations return `[+1σ df, −1σ df]`; unisim variations return a
+single-element list.
+
+---
+
+**`plot_detvar` — overlay DV and CV histograms**
+
+```python
+fig, ax_main, ax_ratio = nue.plot_detvar(
+    detvar_dict,
+    key="calo_Ccal",
+    var="primshw.shw.bestplane_dEdx",
+    bins=np.linspace(0, 5, 26),
+    xlabel="Best-plane dE/dx [MeV/cm]",
+)
+```
+
+Upper panel shows CV (black) and each DV variation (dashed). Lower panel shows DV/CV
+ratio with a reference line at 1.
+
+---
+
+## 2026-05-11 — CutSpec-based selection refactor; preprocess functions
+
+### Bug fixes
+
+**`select()` — non-νe background dropping fixed**
+A logic error caused some non-νe MC events to survive the PDG filter. The condition is
+now correct, and a guard ensures all PDG stack categories are included in downstream
+plots even when a category has zero selected events.
+
+---
+
+### New features
+
+**`preprocess_mc` / `preprocess_data` — apply fixes once before any selection**
+
+Run mandatory column creation and corrections on the raw DataFrame exactly once,
+before calling `select()` or any systematic function:
+
+```python
+mc_df   = nue.preprocess_mc(mc_df,   pot=mc_pot)
+data_df = nue.preprocess_data(data_df)
+
+sel_df  = nue.select(mc_df)
+```
+
+Calling these avoids silent inconsistencies when the same raw DataFrame is passed
+through multiple selection paths.
+
+---
+
+**`CutSpec` — structured cut management inside `select()`**
+Internal refactor; no API change required. `select()` and the systematic functions now
+build their cut lists as `CutSpec` objects, which makes `extra_cuts` / `skip_cuts`
+work uniformly across all code paths. The public signature of `select()` is unchanged.
+
+---
+
 ## 2026-05-01 — Cross-section systematics framework, selection improvements, plotting overhaul
 
 ### Bug fixes
