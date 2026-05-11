@@ -446,7 +446,8 @@ def get_detvar_systs(detvar_dict, var, bins,
         ]) / this_norm
 
         cov, cov_frac, corr = calc_matrices(var_arr=dv_hists, cv=cv_hist)
-        matrices_dict[key] = {
+        out_key = key if key.startswith("DetVar_") else f"DetVar_{key}"
+        matrices_dict[out_key] = {
             'hists':    dv_hists,
             'cov':      cov,
             'cov_frac': cov_frac,
@@ -514,7 +515,7 @@ _KEY_EXTRACTORS = {
     "GENIE":  _extract_genie_key,
     "Flux":   lambda key: key.split("_")[0],
     "MCstat": lambda key: key,
-    "DetVar": lambda key: "".join(key.split("_")[1:]),
+    "DetVar": lambda key: "_".join(key.split("_")[1:]),
     "Geant4": lambda key: key.split("_")[1],
 }
 
