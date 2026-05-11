@@ -9,6 +9,7 @@ __all__ = [
     'pdg_categories', 'pdg_dict',
     'mode_categories', 'mode_dict',
     'category_dict_signal',
+    'category_dict_control',
     'nue_flux', 'flux_vals', 'integrated_flux',
     'RHO', 'N_A', 'M_AR', 'V_SBND', 'NTARGETS',
     'POT_NORM_UNC', 'NTARGETS_UNC',

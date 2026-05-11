@@ -446,7 +446,8 @@ def get_detvar_systs(detvar_dict, var, bins,
         ]) / this_norm
 
         cov, cov_frac, corr = calc_matrices(var_arr=dv_hists, cv=cv_hist)
-        matrices_dict[key] = {
+        out_key = key if key.startswith("DetVar_") else f"DetVar_{key}"
+        matrices_dict[out_key] = {
             'hists':    dv_hists,
             'cov':      cov,
             'cov_frac': cov_frac,
@@ -514,7 +515,7 @@ _KEY_EXTRACTORS = {
     "GENIE":  _extract_genie_key,
     "Flux":   lambda key: key.split("_")[0],
     "MCstat": lambda key: key,
-    "DetVar": lambda key: "".join(key.split("_")[1:]),
+    "DetVar": lambda key: "_".join(key.split("_")[1:]),
     "Geant4": lambda key: key.split("_")[1],
 }
 
@@ -557,11 +558,12 @@ def get_syst_df(dicts: list, cv_hist: np.ndarray) -> pd.DataFrame:
     """
     records = []
 
+    N_tot = float(np.sum(cv_hist))
     for d in dicts:
         for raw_key in d:
             cov = d[raw_key]['cov']
             unc = np.sqrt(np.diag(cov)) / cv_hist
-            tot = float(np.mean(unc))
+            tot = float(np.sqrt(np.sum(cov)) / N_tot) if N_tot > 0 else 0.0
 
             category = _classify_category(raw_key)
             if category is None:
