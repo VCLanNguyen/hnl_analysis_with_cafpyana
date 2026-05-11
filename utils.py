@@ -28,43 +28,42 @@ def ensure_lexsorted(frame, axis):
         return frame.sort_index(axis=axis)
     return frame
 
-def merge_hdr(hdr_df,df):
-    """Merge header DataFrame with main DataFrame on entry and __ntuple.
-    
+def merge_hdr(hdr_df, df):
+    """Add header columns (run/subrun/evt) to main DataFrame by index join.
+
+    Performs a left join on the shared index, so hdr_df values are broadcast
+    to all matching rows in df (handles the many-slices-per-event case).
+    More memory-efficient than the original multicol_merge: no reset_index
+    copies, no merge-key hashing on flat columns.
+
     Parameters
     ----------
     hdr_df : pandas.DataFrame
-        DataFrame containing header information with columns including '__ntuple' and 'entry'.
+        Header DataFrame with run, subrun, evt (and optionally file_idx) columns,
+        indexed by (__ntuple, entry).
     df : pandas.DataFrame
-        Main DataFrame containing event data with columns including '__ntuple' and 'entry'.
+        Main event DataFrame indexed by (__ntuple, entry), possibly with
+        multiple rows per event (slices).
+
     Returns
     -------
     pandas.DataFrame
-        Merged DataFrame containing all columns from both hdr_df and df, merged on '__ntuple' and 'entry'.
-    Notes
-    -----
-    - The merge is performed on the columns '__ntuple' and 'entry', which are expected to be present in both DataFrames.
-    - The function ensures that both DataFrames are lexsorted on the relevant columns before merging to avoid performance issues with MultiIndex.
+        df with run/subrun/evt (and file_idx if present) columns appended.
     """
-    hdr_cols = ['__ntuple','entry','run','subrun','evt']
+    add_cols = ['run', 'subrun', 'evt']
+    if 'file_idx' in hdr_df.columns:
+        add_cols.append('file_idx')
 
-    hdr_merge_df = hdr_df.reset_index()[hdr_cols]
-    evt_merge_df = df.reset_index()
+    hdr_subset = hdr_df[add_cols]
+    col_depth = df.columns.nlevels
+    if col_depth > 1:
+        hdr_subset = hdr_subset.copy()
+        hdr_subset.columns = pd.MultiIndex.from_tuples(
+            [tuple([c] + [''] * (col_depth - 1)) for c in add_cols]
+        )
 
-    # Ensure both row and column MultiIndex objects are fully lexsorted before merge.
-    hdr_merge_df = ensure_lexsorted(ensure_lexsorted(hdr_merge_df, axis=0), axis=1)
-    evt_merge_df = ensure_lexsorted(ensure_lexsorted(evt_merge_df, axis=0), axis=1)
-
-    # Build fully padded tuple keys for exact MultiIndex column matches.
-    key_depth = max(hdr_merge_df.columns.nlevels, evt_merge_df.columns.nlevels)
-    ntuple_key = tuple(['__ntuple'] + [''] * (key_depth - 1))
-    entry_key = tuple(['entry'] + [''] * (key_depth - 1))
-
-    merged_df = multicol_merge(hdr_merge_df,
-                               evt_merge_df,
-                         on = [ntuple_key, entry_key]
-                               )
-    return ensure_lexsorted(ensure_lexsorted(merged_df, axis=0), axis=1)
+    result = df.join(hdr_subset)
+    return ensure_lexsorted(ensure_lexsorted(result, axis=0), axis=1)
 
 def apply_event_mask(df: pd.DataFrame, event_mask: str | None = None) -> pd.DataFrame:
     """ Apply event mask filter to DataFrame.
