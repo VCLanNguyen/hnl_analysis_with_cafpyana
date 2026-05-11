@@ -1,5 +1,3 @@
-import pickle
-
 import numpy as np
 import pandas as pd
 from dataclasses import replace
@@ -9,6 +7,7 @@ from .io import load_dfs
 from .selection import select, select_sideband
 from .histogram import get_hist1d
 from .syst import calc_matrices, get_syst, get_syst_df, get_detvar_systs
+from .detvar_store import load_detvar_dict
 from .classes import SystematicsOutput, XSecInputs
 from .constants import integrated_flux, signal_dict, POT_NORM_UNC, NTARGETS_UNC
 from . import config
@@ -61,7 +60,7 @@ def _sum_covariances_from_dicts(syst_dicts, n_bins):
 
 
 def load_detvar_dicts(detvar_files=None):
-    """Load and combine detector variation dictionaries from pickle files.
+    """Load and combine detector variation dictionaries from HDF5 files.
 
     Load this once per session and pass the result directly to
     :func:`get_total_cov` via its ``detvar_dict`` parameter to avoid
@@ -70,7 +69,7 @@ def load_detvar_dicts(detvar_files=None):
     Parameters
     ----------
     detvar_files : list of str, optional
-        Paths to detvar pickle files. Defaults to ``config.DETVAR_DICT_FILES``.
+        Paths to detvar HDF5 files. Defaults to ``config.DETVAR_DICT_FILES``.
 
     Returns
     -------
@@ -82,8 +81,7 @@ def load_detvar_dicts(detvar_files=None):
 
     combined_dict = {}
     for detvar_file in detvar_files:
-        with open(detvar_file, 'rb') as f:
-            combined_dict.update(pickle.load(f))
+        combined_dict.update(load_detvar_dict(detvar_file))
 
     return combined_dict
 
@@ -500,8 +498,7 @@ def get_total_cov(reco_df, reco_var, bins, mcbnb_pot,
         if select_region == "all":
             detvar_dict = load_detvar_dicts(detvar_path)
         else:
-            with open(detvar_path, 'rb') as f:
-                detvar_dict = pickle.load(f)
+            detvar_dict = load_detvar_dict(detvar_path)
         print(f"  Loaded {len(detvar_dict)} detector variation entries")
     elif not include_detv:
         detvar_dict = {}
