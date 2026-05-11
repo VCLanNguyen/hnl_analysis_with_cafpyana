@@ -13,6 +13,7 @@ from . import selection
 from . import classes
 from . import variables
 from . import funcs
+from . import preprocess
 
 from .constants import *
 from .utils import *
@@ -25,6 +26,7 @@ from .selection import *
 from .classes import *
 from .variables import *
 from .funcs import *
+from .preprocess import *
 
 # This allows both:
 # import nueana; nueana.cutPreselection(df)

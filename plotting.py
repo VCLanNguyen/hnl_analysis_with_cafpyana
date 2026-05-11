@@ -254,9 +254,27 @@ def plot_var(df: pd.DataFrame,
                                           weights=pop['weights_mc'] if weight else None,
                                           bins=bins, overflow=overflow)
     
+    # Verify every row in df contributed to exactly one category bin.
+    # Mismatched filter keys, unhandled signal values, or accidental row drops
+    # will show up here before they silently skew the ratio or chi-sq.
+    _expected_total = get_hist1d(data=df[var],
+                                 weights=df['weights_mc'] if weight else None,
+                                 bins=bins, overflow=overflow)
+    _actual_total = np.sum(hists, axis=0)
+    if np.sum(_expected_total) > 0 and not np.isclose(
+        np.sum(_actual_total), np.sum(_expected_total), rtol=1e-5
+    ):
+        _missing_frac = 1.0 - np.sum(_actual_total) / np.sum(_expected_total)
+        warnings.warn(
+            f"plot_var: {abs(_missing_frac):.1%} of weighted events are unaccounted for "
+            f"({'over' if _missing_frac < 0 else 'under'}-counted). "
+            "Check that all category filter keys and signal values cover the full DataFrame.",
+            stacklevel=2,
+        )
+
     # ! THIS ASSUMES that the PDG of interest and the signal type of interest are both index 0
     # ! e.g. for nueCC (signal==0), e- is the first entry in the pdg_dict
-    hists    *= scale 
+    hists    *= scale
     hists[0] = mult_factor*hists[0]
 
     # storing the sum of each category in case we want to display it

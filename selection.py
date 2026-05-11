@@ -1,5 +1,38 @@
+"""nue CC selection.
+
+Each cut is a :class:`CutSpec`. The full sequence is a plain list, so
+customising is straightforward with :func:`modify_cut`:
+
+**Tighten or loosen a cut**::
+
+    from nueana.selection import DEFAULT_CUTS, modify_cut, select
+
+    cuts = modify_cut(DEFAULT_CUTS, "dedx", min=1.5, max=3.0)
+    df_sel = select(df, cuts=cuts)
+
+**Drop a cut**::
+
+    cuts = drop_cuts(DEFAULT_CUTS, "muon_rejection")
+    cuts = drop_cuts(DEFAULT_CUTS, "direction", "shower_length")  # drop multiple
+
+**Add a custom cut**::
+
+    from nueana.selection import CutSpec
+    cuts = DEFAULT_CUTS + [CutSpec("my_cut", fn=lambda df: df.x > 10)]
+
+**Adjust a parameter of an fn-based cut** (combine with ``functools.partial``)::
+
+    from functools import partial
+    cuts = modify_cut(DEFAULT_CUTS, "muon_rejection",
+                      fn=partial(cut_muon_rejection, max_track_length=100))
+"""
+
 import numpy as np
 import pandas as pd
+from dataclasses import dataclass, replace
+from functools import partial, reduce
+from typing import Callable, Optional
+
 from . import config
 from makedf.util import *
 from pyanalib.pandas_helpers import *
@@ -10,277 +43,237 @@ from .geometry import whereTPC
 
 
 # ---------------------------------------------------------------------------
-# Individual cut functions — each returns a boolean mask over df rows.
-# Call these directly when you need fine-grained control (e.g. in detvar loops).
+# CutSpec: declarative description of a single selection cut.
 # ---------------------------------------------------------------------------
 
-def cut_preselection(df, pe_cut=2e3, nuscore_cut=0.5, realisticFV=True):
-    """Preselection: flash PE, nu score, clear-cosmic veto, and fiducial volume."""
-    mask = (
-        (df.slc.barycenterFM.flashPEs > pe_cut)
-        & (df.slc.nu_score > nuscore_cut)
-        & (df.slc.is_clear_cosmic == 0)
-    )
-    if realisticFV:
-        mask &= InFV(df.slc.vertex, det="SBND_nohighyz", inzback=0)
-    return mask
+@dataclass
+class CutSpec:
+    """Declarative description of a single selection cut.
+
+    Exactly one of ``variable``, ``accessor``, or ``fn`` must be set.
+
+    Parameters
+    ----------
+    name : str
+        Unique identifier used for stage stopping and savedict keys.
+    variable : tuple, optional
+        MultiIndex key resolved via getattr chaining, e.g.
+        ``("primshw", "shw", "len")``. Cut passes when
+        ``min < df.<variable> < max``.
+    min, max : float
+        Lower and upper bounds for variable/accessor cuts.
+        Default to ``-inf`` / ``+inf`` (i.e. open-ended).
+    accessor : callable, optional
+        ``lambda df: <Series>`` — use when column access is more
+        complex than a simple tuple key. Cut passes when
+        ``min < accessor(df) < max``.
+    fn : callable, optional
+        ``fn(df) -> bool mask`` — full override for cuts that are not
+        a simple min/max comparison. Takes precedence over
+        ``variable`` and ``accessor``.
+    label : str, optional
+        Human-readable description, e.g. for cut-flow tables and plots.
+        Defaults to ``name`` if not set.
+    """
+    name: str
+    variable: tuple = None
+    min: float = -np.inf
+    max: float = np.inf
+    accessor: Callable = None
+    fn: Callable = None
+    label: str = None
+
+    def __post_init__(self):
+        if self.fn is None and self.accessor is None and self.variable is None:
+            raise ValueError(
+                f"CutSpec '{self.name}': at least one of variable, accessor, or fn must be set."
+            )
+        if self.label is None:
+            self.label = self.name
 
 
-def cut_flash_matching(df, spill_start=0.335, spill_end=0.335 + 1.6, score_cut=0.02):
-    """Flash matching: beam spill timing and flash match score."""
-    return InSpill(df, spill_start, spill_end) & InScore(df, score_cut)
+def _mask(df, spec):
+    """Return a boolean mask for spec applied to df."""
+    if spec.fn is not None:
+        return spec.fn(df)
+    series = spec.accessor(df) if spec.accessor is not None else reduce(getattr, spec.variable, df)
+    return (series > spec.min) & (series < spec.max)
 
 
-def cut_shower_energy(df, min_shower_energy=0.5):
-    """Shower energy: minimum reco energy and positive track score."""
-    return (df.primshw.shw.reco_energy > min_shower_energy) & (df.primshw.trackScore > 0)
+def drop_cuts(cuts, *names):
+    """Return a copy of cuts with the named cut(s) removed.
 
+    Parameters
+    ----------
+    cuts : list of CutSpec
+        The cut sequence to modify.
+    *names : str
+        Names of cuts to drop.
+
+    Examples
+    --------
+    >>> cuts = drop_cuts(DEFAULT_CUTS, "muon_rejection")
+    >>> cuts = drop_cuts(DEFAULT_CUTS, "direction", "shower_length")
+    """
+    unknown = set(names) - {c.name for c in cuts}
+    if unknown:
+        raise ValueError(f"No cuts named {sorted(unknown)}. Available: {[c.name for c in cuts]}")
+    return [c for c in cuts if c.name not in names]
+
+
+def modify_cut(cuts, name, **kwargs):
+    """Return a copy of cuts with the named CutSpec updated.
+
+    Parameters
+    ----------
+    cuts : list of CutSpec
+        The cut sequence to modify.
+    name : str
+        Name of the cut to update.
+    **kwargs
+        Fields to update on the matching CutSpec (passed to
+        ``dataclasses.replace``).
+
+    Returns
+    -------
+    list of CutSpec
+        New list with the named entry replaced.
+
+    Raises
+    ------
+    ValueError
+        If no cut with the given name exists.
+
+    Examples
+    --------
+    >>> cuts = modify_cut(DEFAULT_CUTS, "dedx", min=1.5, max=3.0)
+    >>> cuts = modify_cut(cuts, "muon_rejection",
+    ...                   fn=partial(cut_muon_rejection, max_track_length=100))
+    """
+    names = [c.name for c in cuts]
+    if name not in names:
+        raise ValueError(f"No cut named '{name}'. Available: {names}")
+    return [replace(c, **kwargs) if c.name == name else c for c in cuts]
+
+
+# ---------------------------------------------------------------------------
+# Cut functions for cuts that are not simple min/max comparisons.
+# Use these directly for fine-grained control (e.g. in detvar loops),
+# or pass them as fn= in a CutSpec.
+# ---------------------------------------------------------------------------
 
 def cut_muon_rejection(df, max_track_length=200):
-    """Muon rejection: no reconstructed track longer than max_track_length cm."""
     return np.isnan(df.primtrk.trk.len) | (df.primtrk.trk.len < max_track_length)
 
 
-def cut_conversion_gap(df, min_conversion_gap=0.001, max_conversion_gap=2):
-    """Conversion gap: primary shower vertex-to-start distance in cm."""
-    return (
-        (df.primshw.shw.conversion_gap > min_conversion_gap)
-        & (df.primshw.shw.conversion_gap < max_conversion_gap)
-    )
-
-
-def cut_dedx(df, min_dedx=1.25, max_dedx=2.5):
-    """dE/dx: best-plane dE/dx of the primary shower."""
-    return (
-        (df.primshw.shw.bestplane_dEdx > min_dedx)
-        & (df.primshw.shw.bestplane_dEdx < max_dedx)
-    )
-
-
-def cut_opening_angle(df, min_opening_angle=0.03, max_opening_angle=0.15):
-    """Opening angle: primary shower opening angle in radians."""
-    return (
-        (df.primshw.shw.open_angle > min_opening_angle)
-        & (df.primshw.shw.open_angle < max_opening_angle)
-    )
-
-
-def cut_shower_length(df, min_shower_length=0.1, max_shower_length=200):
-    """Shower length: primary shower length in cm."""
-    return (
-        (df.primshw.shw.len > min_shower_length)
-        & (df.primshw.shw.len < max_shower_length)
-    )
-
-
-def cut_direction(df, min_direction=-1, max_direction=1):
-    """Direction: z-component of the primary shower direction (cos theta)."""
-    return (
-        (df.primshw.shw.dir.z > min_direction)
-        & (df.primshw.shw.dir.z < max_direction)
-    )
-
-
 def InSpill(df, spill_start=0.335, spill_end=0.335 + 1.6):
-    return (df.slc.barycenterFM.flashTime > spill_start) & (df.slc.barycenterFM.flashTime < spill_end)
+    return (
+        (df.slc.barycenterFM.flashTime > spill_start)
+        & (df.slc.barycenterFM.flashTime < spill_end)
+    )
 
 
 def InScore(df, score_cut=0.02):
-    return (df.slc.barycenterFM.score > score_cut)
+    return df.slc.barycenterFM.score > score_cut
 
 
 # ---------------------------------------------------------------------------
-# Full selection pipeline
+# Default cut sequence
+# ---------------------------------------------------------------------------
+
+DEFAULT_CUTS = [
+    CutSpec("flash_pe",        variable=("slc", "barycenterFM", "flashPEs"),  min=2e3,   label="flash PE > 2000"),
+    CutSpec("nu_score",        variable=("slc", "nu_score"),                  min=0.5,   label="nu score > 0.5"),
+    CutSpec("clear_cosmic",    fn=lambda df: df.slc.is_clear_cosmic == 0,                label="clear cosmic"),
+    CutSpec("fiducial_volume", fn=lambda df: InFV(df.slc.vertex, det="SBND_nohighyz", inzback=0), label="fiducial volume"),
+    CutSpec("flash_time",      variable=("slc", "barycenterFM", "flashTime"), min=0.335, max=1.935, label="flash time [0.335, 1.935] µs"),
+    CutSpec("flash_score",     variable=("slc", "barycenterFM", "score"),     min=0.02,             label="flash score > 0.02"),
+    CutSpec("shower_energy",   variable=("primshw", "shw", "reco_energy"),    min=0.5,              label="shower energy > 0.5 GeV"),
+    CutSpec("muon_rejection",  fn=cut_muon_rejection,                                              label="track length < 200 cm"),
+    CutSpec("conversion_gap",  variable=("primshw", "shw", "conversion_gap"), min=0.001, max=2,    label="conversion gap [0.001, 2] cm"),
+    CutSpec("dedx",            variable=("primshw", "shw", "bestplane_dEdx"), min=1.25,  max=2.5,  label="dE/dx [1.25, 2.5] MeV/cm"),
+    CutSpec("opening_angle",   variable=("primshw", "shw", "open_angle"),     min=0.03,  max=0.15, label="opening angle [0.03, 0.15] rad"),
+    CutSpec("shower_length",   variable=("primshw", "shw", "len"),            min=10,    max=200,  label="shower length [10, 200] cm"),
+    ]
+
+# Sideband: built from DEFAULT_CUTS by overriding the cuts that differ.
+SIDEBAND_CUTS = DEFAULT_CUTS.copy()
+SIDEBAND_CUTS = drop_cuts(SIDEBAND_CUTS, "muon_rejection")
+SIDEBAND_CUTS = drop_cuts(SIDEBAND_CUTS, "shower_length")
+SIDEBAND_CUTS = modify_cut(SIDEBAND_CUTS,  "conversion_gap", min=2,    max=np.inf,  label="conversion gap > 2 cm")
+SIDEBAND_CUTS = modify_cut(SIDEBAND_CUTS,  "dedx",           min=3,    max=6,       label="dE/dx [3, 6] MeV/cm")
+SIDEBAND_CUTS = modify_cut(SIDEBAND_CUTS,  "opening_angle",  min=0,    max=1.0,     label="opening angle [0, 1.0] rad")
+
+
+# ---------------------------------------------------------------------------
+# Selection pipeline
 # ---------------------------------------------------------------------------
 
 def select(indf,
+           cuts=None,
            stage=None,
            savedict=False,
            spring=True,
-           realisticFV=True,
-           spill_start=0.335,
-           spill_end=0.335 + 1.6,
-           score_cut=0.02,
-           nuscore_cut=0.5,
-           pe_cut=2e3,
-           shower_scale=1.17,
-           min_shower_energy=0.5,
-           max_track_length=200,
-           min_conversion_gap=0.001,
-           max_conversion_gap=2,
-           min_dedx=1.25,
-           max_dedx=2.5,
-           min_opening_angle=0.03,
-           max_opening_angle=0.15,
-           min_shower_length=10,
-           max_shower_length=200,
-           min_direction=-1,
-           max_direction=1,
-           extra_cuts=None,
-           skip_cuts=None):
-    """Apply the full nue CC selection to a DataFrame.
+           shower_scale=1.17):
+    """Apply a sequence of cuts to a DataFrame.
 
     Parameters
     ----------
     indf : pandas.DataFrame
         Input DataFrame.
+    cuts : list of CutSpec, optional
+        Ordered cut sequence. Defaults to ``DEFAULT_CUTS``.
+        Use :func:`modify_cut` to adjust individual cuts, or build a
+        list from scratch using :class:`CutSpec`.
     stage : str, optional
-        Stop and return after this named stage. One of: ``'preselection'``,
-        ``'flash matching'``, ``'shower energy'``, ``'muon rejection'``,
-        ``'conversion gap'``, ``'dEdx'``, ``'opening angle'``,
-        ``'shower length'``. If None, all cuts are applied.
+        Stop and return after this cut (matched by ``CutSpec.name``).
     savedict : bool, default False
-        If True, return a dict of DataFrames keyed by stage name instead of
-        the final DataFrame.
+        If True, return a dict of DataFrames keyed by cut name instead
+        of the final DataFrame.
     spring : bool, default True
-        Use max-plane shower energy for reco energy (True) or best-plane (False).
-    realisticFV : bool, default True
-        Apply the realistic active-volume fiducial cut.
-    spill_start, spill_end : float
-        Beam-spill flash-time window in µs.
-    score_cut : float, default 0.02
-        Minimum flash-match score.
-    nuscore_cut : float, default 0.5
-        Minimum neutrino score.
-    pe_cut : float, default 2000
-        Minimum flash photoelectrons.
+        Use max-plane shower energy (True) or best-plane (False) as
+        ``primshw.shw.reco_energy`` before cuts are applied.
     shower_scale : float, default 1.17
-        Reco-to-true shower energy scale factor.
-    min_shower_energy : float, default 0.5
-        Minimum primary shower energy in GeV.
-    max_track_length : float, default 200
-        Maximum primary track length in cm.
-    min_conversion_gap, max_conversion_gap : float
-        Shower conversion gap range in cm.
-    min_dedx, max_dedx : float
-        Best-plane dE/dx range in MeV/cm.
-    min_opening_angle, max_opening_angle : float
-        Shower opening angle range in radians.
-    min_shower_length, max_shower_length : float
-        Shower length range in cm.
-    min_direction, max_direction : float
-        Shower direction (cos theta) range.
-    extra_cuts : callable or list of callable, optional
-        Additional cut function(s) applied after all named stages. Each must
-        accept a DataFrame and return a boolean mask, e.g.
-        ``lambda df: abs(df.x) > 10``.
-    skip_cuts : list of str, optional
-        Named stages to skip entirely. Valid names match the ``stage``
-        parameter: ``'preselection'``, ``'flash matching'``, ``'shower energy'``,
-        ``'muon rejection'``, ``'conversion gap'``, ``'dEdx'``,
-        ``'opening angle'``, ``'shower length'``.
+        Scale factor applied to shower energy.
 
     Returns
     -------
     pandas.DataFrame or dict
-        Final selected DataFrame, or a dict of per-stage DataFrames when
+        Final selected DataFrame, or per-stage dict when
         ``savedict=True`` or ``stage`` is set.
     """
-    valid_stages = [
-        'preselection', 'flash matching', 'shower energy', 'muon rejection',
-        'conversion gap', 'dEdx', 'opening angle', 'shower length',
-    ]
-    if stage is not None and stage not in valid_stages:
-        raise ValueError(f"Unknown stage '{stage}'. Valid options: {valid_stages}")
+    cuts = DEFAULT_CUTS if cuts is None else cuts
 
-    skip = set(skip_cuts or [])
-    invalid_skips = skip - set(valid_stages)
-    if invalid_skips:
-        raise ValueError(f"skip_cuts contains unknown stages: {sorted(invalid_skips)}. Valid options: {valid_stages}")
+    if stage is not None and stage not in {c.name for c in cuts}:
+        raise ValueError(
+            f"Unknown stage '{stage}'. Valid options: {[c.name for c in cuts]}"
+        )
 
-    _extra = extra_cuts if isinstance(extra_cuts, list) else [extra_cuts] if extra_cuts is not None else []
-
-    df_dict = {}
     df = indf.copy()
 
-    # Reco energy definition (preprocessing, not a cut).
     energy_col = ("primshw", "shw", "reco_energy", '', '', '')
-    if spring:
-        df[energy_col] = df.primshw.shw.maxplane_energy * shower_scale
-    else:
-        df[energy_col] = df.primshw.shw.bestplane_energy * shower_scale
+    src = df.primshw.shw.maxplane_energy if spring else df.primshw.shw.bestplane_energy
+    df[energy_col] = src * shower_scale
 
-    def save_stage(stage_name, current_df):
+    df_dict = {}
+    for spec in cuts:
+        df = df[_mask(df, spec)]
         if savedict:
-            df_dict[stage_name] = current_df
-        if stage == stage_name:
-            return df_dict if savedict else current_df
-        return None
-
-    if 'preselection' not in skip:
-        df = df[cut_preselection(df, pe_cut=pe_cut, nuscore_cut=nuscore_cut, realisticFV=realisticFV)]
-    result = save_stage('preselection', df)
-    if result is not None: return result
-
-    if 'flash matching' not in skip:
-        df = df[cut_flash_matching(df, spill_start=spill_start, spill_end=spill_end, score_cut=score_cut)]
-    result = save_stage('flash matching', df)
-    if result is not None: return result
-
-    if 'shower energy' not in skip:
-        df = df[cut_shower_energy(df, min_shower_energy=min_shower_energy)]
-    result = save_stage('shower energy', df)
-    if result is not None: return result
-
-    if 'muon rejection' not in skip:
-        df = df[cut_muon_rejection(df, max_track_length=max_track_length)]
-    result = save_stage('muon rejection', df)
-    if result is not None: return result
-
-    if 'conversion gap' not in skip:
-        df = df[cut_conversion_gap(df, min_conversion_gap=min_conversion_gap, max_conversion_gap=max_conversion_gap)]
-    result = save_stage('conversion gap', df)
-    if result is not None: return result
-
-    if 'dEdx' not in skip:
-        df = df[cut_dedx(df, min_dedx=min_dedx, max_dedx=max_dedx)]
-    result = save_stage('dEdx', df)
-    if result is not None: return result
-
-    if 'opening angle' not in skip:
-        df = df[cut_opening_angle(df, min_opening_angle=min_opening_angle, max_opening_angle=max_opening_angle)]
-    result = save_stage('opening angle', df)
-    if result is not None: return result
-
-    if 'shower length' not in skip:
-        df = df[cut_shower_length(df, min_shower_length=min_shower_length, max_shower_length=max_shower_length)]
-    result = save_stage('shower length', df)
-    if result is not None: return result
-
-    df = df[cut_direction(df, min_direction=min_direction, max_direction=max_direction)]
-
-    for cut_fn in _extra:
-        df = df[cut_fn(df)]
+            df_dict[spec.name] = df
+        if stage == spec.name:
+            return df_dict if savedict else df
 
     return df_dict if savedict else df
 
 
-def select_sideband(indf,
-                    savedict=False,
-                    min_conversion_gap=2,
-                    max_conversion_gap=1e3,
-                    max_track_length=1e3,
-                    min_dedx=3,
-                    max_dedx=6,
-                    min_opening_angle=0.15,
-                    max_opening_angle=1.0,
-                    **kwargs):
-    """Apply sideband selection cuts with modified default parameters.
+def select_sideband(indf, cuts=None, **kwargs):
+    """Apply the sideband cut sequence. Accepts the same kwargs as ``select``."""
+    return select(indf, cuts=SIDEBAND_CUTS if cuts is None else cuts, **kwargs)
 
-    Calls :func:`select` with sideband-specific defaults. All parameters can
-    be overridden via ``kwargs``.
-    """
-    return select(indf,
-                  savedict=savedict,
-                  max_track_length=max_track_length,
-                  min_conversion_gap=min_conversion_gap,
-                  max_conversion_gap=max_conversion_gap,
-                  min_dedx=min_dedx,
-                  max_dedx=max_dedx,
-                  min_opening_angle=min_opening_angle,
-                  max_opening_angle=max_opening_angle,
-                  **kwargs)
 
+# ---------------------------------------------------------------------------
+# Truth categorisation
+# ---------------------------------------------------------------------------
 
 def define_signal(indf: pd.DataFrame, prefix=None):
     """Define signal/background categories for neutrino interactions.
@@ -302,10 +295,7 @@ def define_signal(indf: pd.DataFrame, prefix=None):
     """
     nudf = ensure_lexsorted(ensure_lexsorted(indf, 0), 1)
 
-    if prefix is None:
-        mcdf = nudf
-    else:
-        mcdf = nudf[prefix]
+    mcdf = nudf[prefix] if prefix is not None else nudf
 
     whereFV = InFV(mcdf.position, det="SBND_nohighyz", inzback=0)
     whereAV = InAV(df=mcdf.position)
@@ -321,15 +311,15 @@ def define_signal(indf: pd.DataFrame, prefix=None):
     else:
         signal = np.full(len(nudf), -1, dtype=np.int16)
 
-    signal[whereFV & (mcdf.iscc == 1) & (abs(mcdf.pdg) == 14) & (mcdf.npi0 > 0)]    = signal_dict["numuCCpi0"]
-    signal[whereFV & (mcdf.iscc == 0) & (mcdf.npi0 > 0)]                            = signal_dict["NCpi0"]
-    signal[whereFV & (mcdf.iscc == 1) & (abs(mcdf.pdg) == 12)]                      = signal_dict["othernueCC"]
-    signal[whereFV & (mcdf.iscc == 1) & (abs(mcdf.pdg) == 14) & (mcdf.npi0 == 0)]   = signal_dict["othernumuCC"]
-    signal[whereFV & (mcdf.iscc == 0) & (mcdf.npi0 == 0)]                           = signal_dict["otherNC"]
-    signal[whereAV & (signal < 0)]                                                  = signal_dict["nonFV"]
-    signal[whereAV == False]                                                        = signal_dict["dirt"]
-    signal[np.isnan(mcdf.E)]                                                        = signal_dict['cosmic']
-    signal[whereFV & whereCCnue]                                                    = signal_dict["nueCC"]
+    signal[whereFV & (mcdf.iscc == 1) & (abs(mcdf.pdg) == 14) & (mcdf.npi0 > 0)]   = signal_dict["numuCCpi0"]
+    signal[whereFV & (mcdf.iscc == 0) & (mcdf.npi0 > 0)]                           = signal_dict["NCpi0"]
+    signal[whereFV & (mcdf.iscc == 1) & (abs(mcdf.pdg) == 12)]                     = signal_dict["othernueCC"]
+    signal[whereFV & (mcdf.iscc == 1) & (abs(mcdf.pdg) == 14) & (mcdf.npi0 == 0)]  = signal_dict["othernumuCC"]
+    signal[whereFV & (mcdf.iscc == 0) & (mcdf.npi0 == 0)]                          = signal_dict["otherNC"]
+    signal[whereAV & (signal < 0)]                                                 = signal_dict["nonFV"]
+    signal[whereAV == False]                                                       = signal_dict["dirt"]
+    signal[np.isnan(mcdf.E)]                                                       = signal_dict['cosmic']
+    signal[whereFV & whereCCnue]                                                   = signal_dict["nueCC"]
 
     nudf["signal"] = signal
     if ((nudf.signal < 0) | (nudf.signal >= len(signal_dict))).any():
@@ -355,10 +345,7 @@ def define_generic(indf: pd.DataFrame, prefix=None):
     indf = ensure_lexsorted(indf, 0)
     nudf = ensure_lexsorted(indf.copy(), 1)
 
-    if prefix is None:
-        mcdf = nudf
-    else:
-        mcdf = nudf[prefix]
+    mcdf = nudf[prefix] if prefix is not None else nudf
 
     whereFV = InFV(df=mcdf.position, inzback=0, det="SBND")
     whereAV = InAV(df=mcdf.position)
@@ -366,11 +353,11 @@ def define_generic(indf: pd.DataFrame, prefix=None):
     if "signal" not in nudf.columns:
         nudf["signal"] = -1
 
-    nudf["signal"] = np.where(whereAV == False,              generic_dict["dirt"],  nudf["signal"])
-    nudf["signal"] = np.where(whereAV,                       generic_dict["nonFV"], nudf["signal"])
-    nudf["signal"] = np.where(whereFV & (mcdf.iscc == 0),    generic_dict["NCnu"],  nudf["signal"])
-    nudf["signal"] = np.where(whereFV & (mcdf.iscc == 1),    generic_dict["CCnu"],  nudf["signal"])
-    nudf["signal"] = np.where(np.isnan(mcdf.E),              generic_dict["cosmic"],nudf["signal"])
+    nudf["signal"] = np.where(whereAV == False,           generic_dict["dirt"],   nudf["signal"])
+    nudf["signal"] = np.where(whereAV,                    generic_dict["nonFV"],  nudf["signal"])
+    nudf["signal"] = np.where(whereFV & (mcdf.iscc == 0), generic_dict["NCnu"],   nudf["signal"])
+    nudf["signal"] = np.where(whereFV & (mcdf.iscc == 1), generic_dict["CCnu"],   nudf["signal"])
+    nudf["signal"] = np.where(np.isnan(mcdf.E),           generic_dict["cosmic"], nudf["signal"])
 
     if ((nudf.signal < 0) | (nudf.signal >= len(generic_dict))).any():
         print("Warning: unidentified signal/background channels present.")
