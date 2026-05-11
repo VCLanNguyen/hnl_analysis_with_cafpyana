@@ -793,35 +793,42 @@ def plot_syst_category_breakdown(angle_syst_df: pd.DataFrame,
     angle_cat = angle_syst_df.sort_values('sum').groupby('category')['unc'].apply(_combine_syst_uncertainties)
     energy_cat = energy_syst_df.sort_values('sum').groupby('category')['unc'].apply(_combine_syst_uncertainties)
 
+    angle_cat_sums  = angle_syst_df.groupby('category')['sum'].apply(lambda s: float(np.sqrt(np.sum(s**2))))
+    energy_cat_sums = energy_syst_df.groupby('category')['sum'].apply(lambda s: float(np.sqrt(np.sum(s**2))))
+
     for category in category_dict.keys():
         if category not in angle_cat.index:
             continue
+        style = category_dict[category]
         axes[1].stairs(
             angle_cat[category] * 100,
             angle_bins,
             lw=1.8,
-            linestyle=category_dict[category]['line'],
-            label=category_dict[category]['label'],
-            color=category_dict[category]['color'],
+            linestyle=style['line'],
+            label=f"{style['label']} ({angle_cat_sums.get(category, 0.):.1%})",
+            color=style['color'],
             alpha=0.8,
         )
         axes[0].stairs(
             energy_cat[category] * 100,
             energy_bins,
             lw=1.8,
-            linestyle=category_dict[category]['line'],
-            label=category_dict[category]['label'],
-            color=category_dict[category]['color'],
+            linestyle=style['line'],
+            label=f"{style['label']} ({energy_cat_sums.get(category, 0.):.1%})",
+            color=style['color'],
             alpha=0.8,
         )
 
     angle_tot = _combine_syst_uncertainties(angle_syst_df)
     energy_tot = _combine_syst_uncertainties(energy_syst_df)
 
+    total_angle_sum  = float(np.sqrt(np.sum(angle_syst_df['sum']  ** 2)))
+    total_energy_sum = float(np.sqrt(np.sum(energy_syst_df['sum'] ** 2)))
+
     if angle_tot.size:
-        axes[1].stairs(angle_tot * 100, angle_bins, lw=2, color='black', label='Total')
+        axes[1].stairs(angle_tot * 100, angle_bins, lw=2, color='black', label=f'Total ({total_angle_sum:.1%})')
     if energy_tot.size:
-        axes[0].stairs(energy_tot * 100, energy_bins, lw=2, color='black', label='Total')
+        axes[0].stairs(energy_tot * 100, energy_bins, lw=2, color='black', label=f'Total ({total_energy_sum:.1%})')
 
     axes[1].set_xlabel(r"Leading shower direction, $\cos\theta$")
     axes[0].set_xlabel("Leading shower energy [GeV]")
@@ -889,10 +896,13 @@ def plot_syst_breakdown(angle_syst_df: pd.DataFrame,
     energy_tot = _combine_syst_uncertainties(this_energy_df)
     angle_tot = _combine_syst_uncertainties(this_angle_df)
 
+    energy_sum = float(np.sqrt(np.sum(this_energy_df['sum'] ** 2)))
+    angle_sum  = float(np.sqrt(np.sum(this_angle_df['sum']  ** 2)))
+
     if energy_tot.size:
-        axes[0].stairs(energy_tot * 100, energy_bins, lw=2, color=this_color, label=f'Total {this_label} ({np.mean(energy_tot):.1%})')
+        axes[0].stairs(energy_tot * 100, energy_bins, lw=2, color=this_color, label=f'Total {this_label} ({energy_sum:.1%})')
     if angle_tot.size:
-        axes[1].stairs(angle_tot * 100, angle_bins, lw=2, color=this_color, label=f'Total {this_label} ({np.mean(angle_tot):.1%})')
+        axes[1].stairs(angle_tot * 100, angle_bins, lw=2, color=this_color, label=f'Total {this_label} ({angle_sum:.1%})')
 
     axes[0].set_xlabel("Leading shower energy [GeV]")
     axes[1].set_xlabel(r"Leading shower direction, $\cos\theta$")
