@@ -558,11 +558,12 @@ def get_syst_df(dicts: list, cv_hist: np.ndarray) -> pd.DataFrame:
     """
     records = []
 
+    N_tot = float(np.sum(cv_hist))
     for d in dicts:
         for raw_key in d:
             cov = d[raw_key]['cov']
             unc = np.sqrt(np.diag(cov)) / cv_hist
-            tot = float(np.mean(unc))
+            tot = float(np.sqrt(np.sum(cov)) / N_tot) if N_tot > 0 else 0.0
 
             category = _classify_category(raw_key)
             if category is None:
