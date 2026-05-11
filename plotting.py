@@ -29,6 +29,7 @@ __all__ = [
     'plot_var_pdg',
     'data_plot_overlay',
     'plot_mc_data',
+    'plot_detvar',
     'plot_syst_category_breakdown',
     'plot_syst_breakdown',
 ]
@@ -36,7 +37,8 @@ __all__ = [
 from .constants import (signal_dict, signal_categories,
                         generic_dict, generic_categories,
                         pdg_categories,
-                        mode_dict, mode_categories)
+                        mode_dict, mode_categories,
+                        integrated_flux)
 from .utils import ensure_lexsorted
 from .syst import get_syst
 from .histogram import get_hist1d
@@ -669,6 +671,91 @@ def plot_mc_data(mc_df: pd.DataFrame,
         plt.savefig(savefig,bbox_inches='tight')
     
     return fig, ax_main, ax_sub, mc_dict
+
+
+def plot_detvar(
+    detvar_dict: dict,
+    key: str,
+    var: str | tuple,
+    bins: np.ndarray,
+    figsize: tuple[int, int] = (7, 5),
+    xlabel: str = "",
+    ylabel: str = "Events / POT",
+    ratio_min: float = 0.5,
+    ratio_max: float = 1.5,
+) -> tuple[plt.Figure, plt.Axes, plt.Axes]:
+    """Compare DV and CV histograms for one detector variation entry.
+
+    Parameters
+    ----------
+    detvar_dict : dict
+        Detector variation dictionary as returned by
+        :func:`~nueana.detvar_store.load_detvar_dict`.
+    key : str
+        Group name to plot (a key in ``detvar_dict``).
+    var : str or tuple
+        Column to histogram.
+    bins : np.ndarray
+        Bin edges.
+    figsize : tuple, default (7, 5)
+    xlabel : str, optional
+        x-axis label placed on the ratio panel.
+    ylabel : str, default "Events / POT"
+    ratio_min, ratio_max : float, default (0.5, 1.5)
+        y-axis limits for the DV/CV ratio subplot.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+    ax_main : matplotlib.axes.Axes
+        Upper panel with CV and DV histograms.
+    ax_ratio : matplotlib.axes.Axes
+        Lower panel with DV/CV ratio.
+    """
+    entry  = detvar_dict[key]
+    cv_df  = ensure_lexsorted(entry['cv_df'], axis=1)
+    pot    = entry['pot']
+    norm   = integrated_flux * (pot / 1e6)
+
+    cv_hist = get_hist1d(data=cv_df[var], bins=bins) / norm
+
+    dv_entry = entry['dv_df']
+    dv_dfs   = dv_entry if isinstance(dv_entry, list) else [dv_entry]
+    dv_hists = [
+        get_hist1d(data=ensure_lexsorted(dv, axis=1)[var], bins=bins) / norm
+        for dv in dv_dfs
+    ]
+
+    fig = plt.figure(figsize=figsize)
+    gs       = GridSpec(2, 1, height_ratios=[4, 1], hspace=0.35)
+    ax_main  = fig.add_subplot(gs[0])
+    ax_ratio = fig.add_subplot(gs[1])
+
+    ax_main.stairs(cv_hist, bins, color='black', lw=1.5, label='CV')
+    colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
+    for i, dv_hist in enumerate(dv_hists):
+        label = f'DV {i}' if len(dv_hists) > 1 else key
+        color = colors[i % len(colors)]
+        ax_main.stairs(dv_hist, bins, color=color, lw=1.5, linestyle='--', label=label)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            ratio = np.where(cv_hist > 0, dv_hist / cv_hist, np.nan)
+        ax_ratio.stairs(ratio, bins, color=color, lw=1.5, linestyle='--')
+
+    ax_ratio.axhline(1.0, color='black', lw=1)
+    ax_ratio.set_ylim(ratio_min, ratio_max)
+    ax_ratio.set_ylabel("DV / CV")
+    if xlabel:
+        ax_ratio.set_xlabel(xlabel)
+
+    xmin, xmax = ax_main.get_xlim()
+    ax_ratio.set_xlim(xmin, xmax)
+
+    ax_main.set_ylabel(ylabel)
+    ax_main.set_title(key)
+    ax_main.legend()
+    annotate_internal(ax_main)
+
+    return fig, ax_main, ax_ratio
 
 
 def _combine_syst_uncertainties(syst_df: pd.DataFrame) -> np.ndarray:
