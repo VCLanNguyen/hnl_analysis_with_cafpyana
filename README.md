@@ -23,9 +23,12 @@ plotting, and uncertainty studies.
 - `classes.py`: Core dataclasses for analysis variables, cross-section inputs, systematics results, and plot configuration.
 - `variables.py`: Pre-built analysis variable definitions (bins, column names, labels).
 - `selection.py`: Event selection pipeline and MC truth signal labeling.
-- `plotting.py`: Stacked MC, data overlay, data/MC ratio, and systematics breakdown plots.
+- `preprocess.py`: Idempotent preprocessing fixes for MC and data (flash PE scaling, column renames, derived columns).
+- `plotting.py`: Stacked MC, data overlay, data/MC ratio, systematics breakdown, and DetVar comparison plots.
 - `funcs.py`: High-level systematics driver — total covariance calculation and custom uncertainty helpers.
 - `syst.py`: Low-level systematics — universe histograms, covariance matrices, detector variations.
+- `detvar_store.py`: HDF5-based DetVar store — write, load, inspect, and apply selection to DetVar dictionaries.
+- `detvar_recomb.py`: Software-based calorimetry detector variations derived from recombination parameter shifts.
 - `histogram.py`: Histogram wrappers with overflow handling.
 - `utils.py`: DataFrame helpers for MultiIndex sorting, header merging, and event masking.
 - `io.py`: Split-HDF5 dataframe loading.
@@ -47,15 +50,16 @@ import nueana.config as config
 config.CAFPYANA_PATH  = "/path/to/your/cafpyana"
 config.FLUX_FILE      = "/path/to/your/flux.root"
 config.INTIME_FILE    = "/path/to/your/intime.df"
-config.DETVAR_DICT_SIGNAL  = "/path/to/your/detvar_signal.pkl"
-config.DETVAR_DICT_CONTROL = "/path/to/your/detvar_control.pkl"
+config.DETVAR_DICT_FILES   = ["/path/to/your/detvars.h5"]        # base detvar file(s)
 ```
 
-> **Note:** `INTIME_FILE`, `DETVAR_DICT_SIGNAL`, and `DETVAR_DICT_CONTROL` are only
-> used by the systematic uncertainty functions (`get_total_cov`, `get_intime_cov`,
-> `get_detvar_systs`). If you are not yet running systematics, these paths can be
-> left as-is. `FLUX_FILE` is the exception — it is read at import time by
+> **Note:** `INTIME_FILE` and `DETVAR_DICT_FILES` are only used by the systematic
+> uncertainty functions (`get_total_cov`, `get_intime_cov`, `get_detvar_systs`).
+> If you are not yet running systematics, these paths can be left as-is. `FLUX_FILE` is the exception — it is read at import time by
 > `constants.py`, so it must point to a valid file before `import nueana` is called.
+>
+> **DetVar files must be in HDF5 format (`.h5`).** Pickle (`.pkl`) files are no longer
+> supported. Use `write_detvar_store()` from `detvar_store.py` to create `.h5` files.
 
 ### 2. Define your signal categories — `constants.py`
 
@@ -85,28 +89,31 @@ entirely:
 
 ```python
 import nueana as nue
+from nueana.selection import DEFAULT_CUTS, modify_cut, drop_cuts, CutSpec
 
-# Override individual cut thresholds
-df_sel = nue.select(df, min_shower_energy=0.3, max_track_length=150)
+# Tighten or loosen a cut threshold
+tight_cuts = modify_cut(DEFAULT_CUTS, "shower_energy", min=0.3)
+df_sel = nue.select(df, cuts=tight_cuts)
 
 # Skip a cut that doesn't apply to your topology
-df_sel = nue.select(df, skip_cuts=["cut_muon_rejection"])
+no_muon_cuts = drop_cuts(DEFAULT_CUTS, "muon_rejection")
+df_sel = nue.select(df, cuts=no_muon_cuts)
 
 # Add a custom cut on top of the standard pipeline
-my_cut = df.primshw.shw.open_angle < 0.1
-df_sel = nue.select(df, extra_cuts=[my_cut])
+custom_cuts = DEFAULT_CUTS + [CutSpec("my_cut", fn=lambda df: df.primshw.shw.open_angle < 0.1)]
+df_sel = nue.select(df, cuts=custom_cuts)
 ```
 
 `select()` can return all intermediate stages for cut-flow studies:
 
 ```python
 stages = nue.select(df, savedict=True)
-# Keys: 'preselection', 'flash matching', 'shower energy',
-#       'muon rejection', 'conversion gap', 'dEdx',
-#       'opening angle', 'shower length', 'shower density'
+# Keys: 'flash_pe', 'nu_score', 'clear_cosmic', 'fiducial_volume',
+#       'flash_time', 'flash_score', 'shower_energy', 'muon_rejection',
+#       'conversion_gap', 'dedx', 'opening_angle', 'shower_length'
 
 # Or stop at a specific stage
-df_presel = nue.select(df, stage="preselection")
+df_preflash = nue.select(df, stage="flash_pe")
 ```
 
 ### 4. Define your analysis variables — `variables.py`
@@ -141,9 +148,13 @@ from nueana.classes import PlottingConfig
 mc_dfs   = nue.load_dfs("/path/to/mc.df",   ["mcnu", "hdr", "nuecc"])
 data_dfs = nue.load_dfs("/path/to/data.df", ["hdr",  "nuecc"])
 
+# Preprocess raw DataFrames (column fixes, corrections) — do this once before any selection
+mc_raw   = nue.preprocess_mc(mc_dfs["nuecc"])
+data_raw = nue.preprocess_data(data_dfs["nuecc"])
+
 # Run selection and label signal categories
-mc_df   = nue.define_signal(nue.select(mc_dfs["nuecc"],   savedict=False))
-data_df = nue.select(data_dfs["nuecc"], savedict=False)
+mc_df   = nue.define_signal(nue.select(mc_raw,   savedict=False))
+data_df = nue.select(data_raw, savedict=False)
 
 # Make a stacked MC + data plot
 cfg = PlottingConfig(xlabel="Reco shower energy [GeV]", plot_err=True)
@@ -152,6 +163,106 @@ fig, ax_main, ax_sub, mc_dict = nue.plot_mc_data(
     var=nue.electron_energy().var_evt_reco_col,
     bins=nue.electron_energy().bins,
     config=cfg,
+)
+```
+
+## Preprocessing raw DataFrames
+
+Call `preprocess_mc` / `preprocess_data` on the raw CAF-derived DataFrame **before**
+any call to `select()` or the systematic functions. They create derived columns (e.g.
+`reco_energy`) and apply any necessary corrections exactly once, preventing silent
+inconsistencies when the same raw DataFrame is reused across multiple selection paths.
+
+```python
+mc_raw   = nue.preprocess_mc(mc_dfs["nuecc"], pot=mc_pot)
+data_raw = nue.preprocess_data(data_dfs["nuecc"])
+
+# All downstream calls operate on the preprocessed frames
+sel_df         = nue.select(mc_raw)
+detvar_output  = nue.get_total_cov(mc_raw, ..., uncertainty_keys=["detv"])
+```
+
+## Working with detector variations
+
+### Loading from an HDF5 store
+
+DetVar files are HDF5 (`.h5`). Load them once per session and reuse across variables.
+`load_detvar_dict` automatically applies `preprocess_mc` to every loaded DataFrame
+so that DV/CV samples receive identical treatment to the main MC:
+
+```python
+detvar_dict = nue.load_detvar_dicts()   # reads paths from config.py
+
+# Or load a specific file
+from nueana.detvar_store import load_detvar_dict
+detvar_dict = load_detvar_dict("/path/to/mydetvars.h5")
+
+# Inspect what's inside
+from nueana.detvar_store import detvar_store_info
+detvar_store_info("/path/to/mydetvars.h5")
+```
+
+To skip preprocessing (e.g. the DataFrames were already preprocessed before writing):
+
+```python
+detvar_dict = load_detvar_dict("/path/to/mydetvars.h5", preprocess_fn=lambda df: df)
+```
+
+Apply a custom selection to every DV/CV DataFrame with `apply_selection`. Pass a
+modified cut list via `cuts` rather than keyword arguments, since `select()` takes
+cut sequences rather than per-parameter overrides:
+
+```python
+from nueana.detvar_store import apply_selection
+from nueana.selection import modify_cut, DEFAULT_CUTS
+
+tight_cuts = modify_cut(DEFAULT_CUTS, "shower_length", min=15)
+detvar_dict = apply_selection(detvar_dict, nue.select, cuts=tight_cuts)
+```
+
+### Building a new HDF5 store
+
+```python
+from nueana.detvar_store import write_detvar_store
+
+write_detvar_store(
+    "mydetvars.h5",
+    cv_dict={"cv": cv_file},
+    dv_dict={"pmtgain": [dv_lo, dv_hi], "lyatt": [dv_ly]},
+    cv_map={"pmtgain": "cv", "lyatt": "cv"},
+)
+```
+
+### Software calorimetry variations
+
+`make_recomb_detvars` derives shower-energy systematics from the raw `slc_df` without
+separate MC samples. Pass the result to `write_detvar_store` to persist them:
+
+```python
+from nueana.detvar_recomb import make_recomb_detvars
+
+dv_dfs = make_recomb_detvars(slc_df)
+# dv_dfs is dict[str, list[pd.DataFrame]]
+# Keys: calo_Ccal, calo_alpha, calo_beta90, calo_R, calo_phi, calo_yz, calo_Ecorr
+
+dv_files = {name: [cv._replace(slc_df=df) for df in dfs]
+            for name, dfs in dv_dfs.items()}
+write_detvar_store("recomb_detvars.h5",
+    cv_dict={"cv": cv},
+    dv_dict=dv_files,
+    cv_map={name: "cv" for name in dv_files},
+)
+```
+
+### Comparing DV and CV histograms
+
+```python
+fig, ax_main, ax_ratio = nue.plot_detvar(
+    detvar_dict,
+    key="calo_Ccal",
+    var="primshw.shw.bestplane_dEdx",
+    bins=np.linspace(0, 5, 26),
+    xlabel="Best-plane dE/dx [MeV/cm]",
 )
 ```
 
