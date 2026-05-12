@@ -50,14 +50,12 @@ import nueana.config as config
 config.CAFPYANA_PATH  = "/path/to/your/cafpyana"
 config.FLUX_FILE      = "/path/to/your/flux.root"
 config.INTIME_FILE    = "/path/to/your/intime.df"
-config.DETVAR_DICT_SIGNAL  = "/path/to/your/detvar_signal.h5"
-config.DETVAR_DICT_CONTROL = "/path/to/your/detvar_control.h5"
+config.DETVAR_DICT_FILES   = ["/path/to/your/detvars.h5"]        # base detvar file(s)
 ```
 
-> **Note:** `INTIME_FILE`, `DETVAR_DICT_SIGNAL`, and `DETVAR_DICT_CONTROL` are only
-> used by the systematic uncertainty functions (`get_total_cov`, `get_intime_cov`,
-> `get_detvar_systs`). If you are not yet running systematics, these paths can be
-> left as-is. `FLUX_FILE` is the exception — it is read at import time by
+> **Note:** `INTIME_FILE` and `DETVAR_DICT_FILES` are only used by the systematic
+> uncertainty functions (`get_total_cov`, `get_intime_cov`, `get_detvar_systs`).
+> If you are not yet running systematics, these paths can be left as-is. `FLUX_FILE` is the exception — it is read at import time by
 > `constants.py`, so it must point to a valid file before `import nueana` is called.
 >
 > **DetVar files must be in HDF5 format (`.h5`).** Pickle (`.pkl`) files are no longer
