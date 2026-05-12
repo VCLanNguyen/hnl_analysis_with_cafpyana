@@ -377,3 +377,15 @@ def define_signal(indf: pd.DataFrame, prefix=None):
     if ((nudf.signal < 0) | (nudf.signal >= len(signal_dict))).any(): 
         print("Warning: unidentified signal/bacgkr channels present.")
     return nudf
+
+def define_signal_hnl(indf):
+
+    #--------------------------------------------------------------------------#
+    #define signal for HNL sample: -1 for cosmic and 9 for HNL
+    signal_col = ('signal', '', '', '', '', '')
+    mask_cosmic = np.isnan(indf[('slc', 'prtl', 'E', '', '', '')])
+    #mchnl_df.loc[mask_cosmic, signal_col] = constants.signal_dict['hnlcosmic']
+    indf.loc[mask_cosmic, signal_col] = signal_dict['hnl'] #also label HNL cosmic as HNL since they are part of the signal region
+    indf.loc[~mask_cosmic, signal_col] = signal_dict['hnl']
+
+    return indf

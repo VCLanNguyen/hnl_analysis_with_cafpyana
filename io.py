@@ -1,5 +1,6 @@
 """File input/output utilities for loading HDF5 data files."""
 import pandas as pd
+import numpy as np
 
 # credit for first three functions to Mun! 
 def get_n_split(file):
@@ -60,3 +61,65 @@ def load_dfs(file, keys2load, n_max_concat=10, start_split=0):
             dfs.append(this_df)
         out_df_dict[key] = pd.concat(dfs, ignore_index=False)
     return out_df_dict
+
+def correct_cosmic_weight_mevprtl_df(indf_rec, indf_truth, indf_hdr):
+
+    #Step 1: Build total event weight in reco and truth HNL dataframes
+
+    # Build total event weight in reco and truth HNL dataframes
+    fluxw_column = ('slc', 'prtl', 'flux_weight', '', '', '')
+    rayw_column = ('slc', 'prtl', 'ray_weight', '', '', '')
+    decayw_column = ('slc', 'prtl', 'decay_weight', '', '', '')
+    totalw_column = ('weights_mc', '', '', '', '', '')
+    indf_rec[totalw_column] = indf_rec[rayw_column] * indf_rec[decayw_column] * indf_rec[fluxw_column]
+
+    truth_fluxw_column = ('flux_weight', '')
+    truth_rayw_column = ('ray_weight', '')
+    truth_decayw_column = ('decay_weight', '')
+    truth_totalw_column = ('weights_mc_truth', '')
+    indf_truth[truth_totalw_column] = indf_truth[truth_rayw_column] * indf_truth[truth_decayw_column] * indf_truth[truth_fluxw_column]
+
+    #-------------------------------------------------------------------------------------#
+    #Step 2: Join evt from header dataframe into reco dataframe using shared (__ntuple, entry) index
+    evt_col = ('evt', '', '', '', '', '')
+    indf_rec[evt_col] = indf_hdr['evt'].reindex(indf_rec.index)
+
+    #-------------------------------------------------------------------------------------#
+    # Step 3: Join truth total weight into reco dataframe on (__ntuple, entry, evt)
+    totalw_truth_col = ('weights_mc_truth', '', '', '', '', '')
+
+    truth_total_weight = indf_truth[truth_totalw_column]
+    truth_evt = indf_hdr['evt'].reindex(indf_truth.index).values
+
+    truth_key = pd.MultiIndex.from_arrays(
+        [
+            indf_truth.index.get_level_values(0),
+            indf_truth.index.get_level_values(1),
+            truth_evt,
+        ],
+        names=['__ntuple', 'entry', 'evt'],
+    )
+    truth_lookup = pd.Series(truth_total_weight.values, index=truth_key)
+
+    reco_key = pd.MultiIndex.from_arrays(
+        [
+            indf_rec.index.get_level_values(0),
+            indf_rec.index.get_level_values(1),
+            indf_rec[evt_col].values,
+        ],
+        names=['__ntuple', 'entry', 'evt'],
+    )
+
+    indf_rec[totalw_truth_col] = truth_lookup.reindex(reco_key).to_numpy()
+
+    #-------------------------------------------------------------------------------------#
+    # Step 4: Correct cosmic weight in reco dataframe using truth total weight for cosmic entries
+
+    mask_cosmic = np.isnan(indf_rec[('slc', 'prtl', 'E', '', '', '')])
+    indf_rec.loc[mask_cosmic, totalw_column] = indf_rec.loc[mask_cosmic, truth_totalw_column]
+
+    #-------------------------------------------------------------------------------------#
+    #Drop event column from reco dataframe
+    indf_rec = indf_rec.drop(columns=[evt_col])
+
+    return indf_rec
