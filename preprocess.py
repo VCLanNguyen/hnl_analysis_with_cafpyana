@@ -37,6 +37,7 @@ __all__ = [
     'preprocess_data',
     'fix_flash_pe_scale',
     'fix_flash_time',
+    'fix_contained_cols',
     'add_phi',
 ]
 
@@ -84,6 +85,43 @@ def _skip_if_applied(df: pd.DataFrame, name: str) -> bool:
         )
         return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# Column rename fixes (MC + data)
+# ---------------------------------------------------------------------------
+
+# Old CV format: ('slc', 'contained', 'Xcm', '', '', '')
+# New DV format: ('slc', 'contained', 'margin_X', 'tot', '', '')
+_CONTAINED_COL_RENAME = {
+    ('slc', 'contained', '0cm',   '', '', ''): ('slc', 'contained', 'margin_0',   'tot', '', ''),
+    ('slc', 'contained', '5cm',   '', '', ''): ('slc', 'contained', 'margin_5',   'tot', '', ''),
+    ('slc', 'contained', '10cm',  '', '', ''): ('slc', 'contained', 'margin_10',  'tot', '', ''),
+    ('slc', 'contained', '20cm',  '', '', ''): ('slc', 'contained', 'margin_20',  'tot', '', ''),
+    ('slc', 'contained', '30cm',  '', '', ''): ('slc', 'contained', 'margin_30',  'tot', '', ''),
+    ('slc', 'contained', '50cm',  '', '', ''): ('slc', 'contained', 'margin_50',  'tot', '', ''),
+    ('slc', 'contained', '75cm',  '', '', ''): ('slc', 'contained', 'margin_75',  'tot', '', ''),
+    ('slc', 'contained', '100cm', '', '', ''): ('slc', 'contained', 'margin_100', 'tot', '', ''),
+}
+
+
+def fix_contained_cols(df: pd.DataFrame) -> pd.DataFrame:
+    """Rename old-style containment columns to the current naming convention.
+
+    Old CV format: ``('slc', 'contained', 'Xcm', '', '', '')``
+    New format:    ``('slc', 'contained', 'margin_X', 'tot', '', '')``
+
+    Only columns that are present in the DataFrame are renamed; others are
+    silently skipped.  This fix is idempotent.
+    """
+    name = 'contained_cols'
+    if _skip_if_applied(df, name):
+        return df
+    rename_map = {old: new for old, new in _CONTAINED_COL_RENAME.items()
+                  if old in df.columns}
+    if rename_map:
+        df = df.rename(columns=rename_map)
+    return _mark_applied(df, name)
 
 
 # ---------------------------------------------------------------------------
@@ -147,8 +185,9 @@ def preprocess_mc(df: pd.DataFrame, *, flash_pe_scale: float = 0.66) -> pd.DataF
 
     Applies:
 
-    1. :func:`fix_flash_pe_scale` — flash PE calibration correction
-    2. :func:`add_phi`            — shower and track azimuthal angles
+    1. :func:`fix_contained_cols` — rename old-style containment column names
+    2. :func:`fix_flash_pe_scale` — flash PE calibration correction
+    3. :func:`add_phi`            — shower and track azimuthal angles
 
     All fixes are idempotent; calling this on an already-preprocessed
     DataFrame is safe (each already-applied fix warns and skips).
@@ -160,6 +199,7 @@ def preprocess_mc(df: pd.DataFrame, *, flash_pe_scale: float = 0.66) -> pd.DataF
     flash_pe_scale : float
         Scale factor forwarded to :func:`fix_flash_pe_scale` (default 0.66).
     """
+    df = fix_contained_cols(df)
     df = fix_flash_pe_scale(df, scale=flash_pe_scale)
     df = add_phi(df)
     return df

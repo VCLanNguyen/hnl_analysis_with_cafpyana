@@ -288,8 +288,14 @@ def write_detvar_store(
 def load_detvar_dict(
     h5file: str,
     groups: list | None = None,
+    preprocess_fn=None,
 ) -> dict:
     """Load a DetVar HDF5 store into a dict compatible with get_detvar_systs.
+
+    Each loaded DataFrame is preprocessed with *preprocess_fn* before being
+    returned. This mirrors the preprocessing applied to the main MC DataFrames
+    (flash PE scaling, phi angles, etc.) so that selection cuts behave
+    identically for DV/CV and nominal MC.
 
     Parameters
     ----------
@@ -297,12 +303,26 @@ def load_detvar_dict(
         Path to an HDF5 file written by :func:`write_detvar_store`.
     groups : list of str, optional
         Subset of group names to load. If None, all groups are loaded.
+    preprocess_fn : callable, optional
+        Function applied to each loaded DataFrame before it is stored in the
+        output dict.  Signature: ``fn(df) -> df``.  Defaults to
+        :func:`~nueana.preprocess.preprocess_mc`.  Pass ``None`` to use the
+        default, or pass an explicit callable to override.  Pass
+        ``preprocess_fn=lambda df: df`` to skip preprocessing entirely.
 
     Returns
     -------
     dict
         Maps each group name to ``{'dv_df': df_or_list, 'cv_df': df, 'pot': float}``.
     """
+    _preprocess_label = None
+    if preprocess_fn is None:
+        from .preprocess import preprocess_mc
+        preprocess_fn    = preprocess_mc
+        _preprocess_label = "preprocess_mc (default)"
+    else:
+        _preprocess_label = getattr(preprocess_fn, '__name__', repr(preprocess_fn))
+
     meta = pd.read_hdf(h5file, 'meta')
 
     if groups is not None:
@@ -320,20 +340,45 @@ def load_detvar_dict(
         for group, row in meta.iterrows():
             cv_key = row['cv_key']
             if cv_key not in cv_cache:
-                cv_cache[cv_key] = store[f'cv/{cv_key}']
+                cv_cache[cv_key] = preprocess_fn(store[f'cv/{cv_key}'])
             cv_full = cv_cache[cv_key]
 
-            cv_iloc   = store[f'cv_iloc/{group}'].values
+            cv_iloc    = store[f'cv_iloc/{group}'].values
             cv_matched = cv_full.iloc[cv_iloc]
 
-            n_dv  = int(row['n_dv'])
-            dv_dfs = [store[f'dv/{group}/v{i}'] for i in range(n_dv)]
+            n_dv   = int(row['n_dv'])
+            dv_dfs = [preprocess_fn(store[f'dv/{group}/v{i}']) for i in range(n_dv)]
 
             out[group] = {
                 'dv_df': dv_dfs if n_dv > 1 else dv_dfs[0],
                 'cv_df': cv_matched,
                 'pot':   float(row['pot']),
             }
+
+    print(f"Loaded {len(out)} detvar group(s) from {h5file}  [preprocess: {_preprocess_label}]")
+    print(f"  Keys: {list(out.keys())}")
+
+    _col_warnings = []
+    for group, entry in out.items():
+        cv_cols  = set(entry['cv_df'].columns.tolist())
+        dv_list  = entry['dv_df'] if isinstance(entry['dv_df'], list) else [entry['dv_df']]
+        for i, dv in enumerate(dv_list):
+            dv_cols  = set(dv.columns.tolist())
+            only_cv  = cv_cols - dv_cols
+            only_dv  = dv_cols - cv_cols
+            if only_cv or only_dv:
+                suffix = f"[v{i}]" if len(dv_list) > 1 else ""
+                if only_cv:
+                    _col_warnings.append(f"  {group}{suffix}: columns only in CV:  {sorted(only_cv)}")
+                if only_dv:
+                    _col_warnings.append(f"  {group}{suffix}: columns only in DV:  {sorted(only_dv)}")
+
+    if _col_warnings:
+        print("  Column inconsistencies found:")
+        for w in _col_warnings:
+            print(w)
+    else:
+        print("  Column check: OK (all DV/CV column sets match)")
 
     return out
 
