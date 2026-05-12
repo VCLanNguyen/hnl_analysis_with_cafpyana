@@ -45,7 +45,9 @@ nue.load_detvar_dicts(detvar_files=["mydetvars.h5"])
 
 **HDF5-based DetVar store (`detvar_store`)**
 
-Write and read detector-variation DataFrames in a compact HDF5 format:
+Write and read detector-variation DataFrames in a compact HDF5 format.
+`load_detvar_dict` automatically applies `preprocess_mc` to every loaded DataFrame
+so DV/CV samples receive the same flash PE scaling and derived columns as the main MC:
 
 ```python
 from nueana.detvar_store import write_detvar_store, load_detvar_dict, detvar_store_info
@@ -58,8 +60,11 @@ write_detvar_store(
     cv_map={"pmtgain": "cv", "lyatt": "cv"},
 )
 
-# Read back
+# Read back — preprocess_mc applied automatically
 detvar_dict = load_detvar_dict("mydetvars.h5")
+
+# Skip preprocessing (e.g. DataFrames were preprocessed before writing)
+detvar_dict = load_detvar_dict("mydetvars.h5", preprocess_fn=lambda df: df)
 
 # Inspect
 detvar_store_info("mydetvars.h5")
@@ -150,8 +155,8 @@ through multiple selection paths.
 
 **`CutSpec` — structured cut management inside `select()`**
 Internal refactor; no API change required. `select()` and the systematic functions now
-build their cut lists as `CutSpec` objects, which makes `extra_cuts` / `skip_cuts`
-work uniformly across all code paths. The public signature of `select()` is unchanged.
+build their cut lists as `CutSpec` objects. The public signature of `select()` is
+unchanged; use `modify_cut` / `drop_cuts` to customise the cut sequence.
 
 ---
 
@@ -232,25 +237,29 @@ Use `dataclasses.replace()` or the `add_*` helpers (see below) to build modified
 
 ### New features
 
-**Fine-grained selection control with `extra_cuts` / `skip_cuts`**
+**Fine-grained selection control with `modify_cut`, `drop_cuts`, and `CutSpec`**
 
-Pass additional boolean masks or skip built-in cuts without rewriting the full pipeline:
+Adjust, remove, or extend cuts without rewriting the full pipeline:
 
 ```python
+from nueana.selection import DEFAULT_CUTS, modify_cut, drop_cuts, CutSpec
+
 # Skip the shower-length cut entirely
-df_no_len = nue.select(df, skip_cuts=["cut_shower_length"])
+no_len_cuts = drop_cuts(DEFAULT_CUTS, "shower_length")
+df_no_len = nue.select(df, cuts=no_len_cuts)
 
 # Add a custom cut on top of the standard selection
-my_cut = df.primshw.shw.reco_energy > 0.8
-df_custom = nue.select(df, extra_cuts=[my_cut])
+custom_cuts = DEFAULT_CUTS + [CutSpec("high_energy", fn=lambda df: df.primshw.shw.reco_energy > 0.8)]
+df_custom = nue.select(df, cuts=custom_cuts)
 
-# Combine: skip one built-in, add one custom
-df_hybrid = nue.select(df, skip_cuts=["cut_direction"], extra_cuts=[my_cut])
+# Tighten an existing cut threshold
+tight_cuts = modify_cut(DEFAULT_CUTS, "dedx", min=1.5, max=3.0)
+df_tight = nue.select(df, cuts=tight_cuts)
 ```
 
-Available cut names: `cut_preselection`, `cut_flash_matching`, `cut_shower_energy`,
-`cut_muon_rejection`, `cut_conversion_gap`, `cut_dedx`, `cut_opening_angle`,
-`cut_shower_length`, `cut_direction`.
+Available cut names: `flash_pe`, `nu_score`, `clear_cosmic`, `fiducial_volume`,
+`flash_time`, `flash_score`, `shower_energy`, `muon_rejection`, `conversion_gap`,
+`dedx`, `opening_angle`, `shower_length`.
 
 ---
 
