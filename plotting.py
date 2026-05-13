@@ -278,11 +278,11 @@ def plot_var(df: pd.DataFrame,
             ax.fill_between(bins, bottom, steps[i], step="pre", 
                              facecolor=mpl.colors.to_rgba(color,alpha),
                              edgecolor=mpl.colors.to_rgba(color,1.0),  
-                             lw=1.5, 
+                             lw=0.75, 
                              hatch=hatch[i],zorder=(ncategories-i),label=plot_label)
         else:
             edge_baseline = steps[i-1][1:] if i > 0 else 0.0
-            ax.stairs(hists[i], bins, baseline=edge_baseline, color=color, lw=2.0,
+            ax.stairs(hists[i], bins, baseline=edge_baseline, color=color, lw=2.5,
                       label=plot_label, zorder=(ncategories-i))
     
     if plot_err: 
@@ -563,7 +563,8 @@ def plot_mc_hnl_data(mc_df: pd.DataFrame,
 
     data_args = dict(df=data_df, var=var, bins=bins, ax=ax_main, normalize=kwargs.get('normalize', False), overflow=kwargs.get('overflow',True))
     mc_args   = dict(df=mc_df, var=var, bins=bins, ax=ax_main, hist_filled=True, error_legend=False, scale = scale_nu, **kwargs)
-    hnl_args = dict(df=hnl_df, var=var, bins=bins, ax=ax_main, hist_filled=False, error_legend=True, scale = scale_hnl, **kwargs)
+    #hnl user default False for percents and counts, no overwrite
+    hnl_args = {**dict(df=hnl_df, var=var, bins=bins, ax=ax_main, hist_filled=False, error_legend=True, scale=scale_hnl, **kwargs), 'percents': False, 'counts': False}
 
     data_hist, data_err, data_plot = data_plot_overlay(**data_args)
     mc_bins, mc_steps, mc_err, mc_dict = plot_var(**mc_args)

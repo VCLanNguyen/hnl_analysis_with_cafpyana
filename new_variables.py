@@ -12,6 +12,7 @@ def add_variables(df, beam_x: float = -74.0, beam_y: float = 0.0):
 
     Per shower (primshw / secshw if present):
       (shw, 'shw', 'angle_z', '', '', '')          -- angle w.r.t. beam axis z [deg]
+      (shw, 'shw', 'phi', '', '', '')              -- azimuthal angle [deg]
 
     Slice-level:
       ('slc', 'vertex', 'transverse_distance_beam_2', '', '', '')
@@ -47,6 +48,12 @@ def add_variables(df, beam_x: float = -74.0, beam_y: float = 0.0):
     for shw in ('primshw', 'secshw'):
         if (shw, 'shw', 'dir', 'z', '', '') in df.columns:
             df[(shw, 'shw', 'angle_z', '', '', '')] = _angle_z(shw)
+
+    for shw in ('primshw', 'secshw'):
+        if (shw, 'shw', 'dir', 'x', '', '') in df.columns and (shw, 'shw', 'dir', 'y', '', '') in df.columns:
+            dx = df[(shw, 'shw', 'dir', 'x', '', '')].values
+            dy = df[(shw, 'shw', 'dir', 'y', '', '')].values
+            df[(shw, 'shw', 'phi', '', '', '')] = np.arctan2(dx, dy) * 180 / np.pi
 
     vtx_x_col = ('slc', 'vertex', 'x', '', '', '')
     vtx_y_col = ('slc', 'vertex', 'y', '', '', '')
