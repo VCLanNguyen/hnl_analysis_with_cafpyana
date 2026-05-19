@@ -22,7 +22,12 @@ Data-only fixes
 
 MC + data fixes
 ---------------
-- :func:`add_phi`             — derive shower and track azimuthal angles from direction
+- :func:`fix_sec_shw_energy` — scale secondary shower energy from maxplane_energy
+- :func:`add_phi`            — derive shower and track azimuthal angles from direction
+
+Pi0 fix (opt-in, call after preprocess_mc / preprocess_data)
+-------------------------------------------------------------
+- :func:`add_pi0`  — pi0 kinematics: opening angle, invariant mass, momentum
 """
 
 import warnings
@@ -37,8 +42,9 @@ __all__ = [
     'preprocess_data',
     'fix_flash_pe_scale',
     'fix_flash_time',
-    'fix_contained_cols',
     'add_phi',
+    'fix_sec_shw_energy',
+    'add_pi0',
 ]
 
 _FIX_PREFIX = '_fix_'
@@ -85,43 +91,6 @@ def _skip_if_applied(df: pd.DataFrame, name: str) -> bool:
         )
         return True
     return False
-
-
-# ---------------------------------------------------------------------------
-# Column rename fixes (MC + data)
-# ---------------------------------------------------------------------------
-
-# Old CV format: ('slc', 'contained', 'Xcm', '', '', '')
-# New DV format: ('slc', 'contained', 'margin_X', 'tot', '', '')
-_CONTAINED_COL_RENAME = {
-    ('slc', 'contained', '0cm',   '', '', ''): ('slc', 'contained', 'margin_0',   'tot', '', ''),
-    ('slc', 'contained', '5cm',   '', '', ''): ('slc', 'contained', 'margin_5',   'tot', '', ''),
-    ('slc', 'contained', '10cm',  '', '', ''): ('slc', 'contained', 'margin_10',  'tot', '', ''),
-    ('slc', 'contained', '20cm',  '', '', ''): ('slc', 'contained', 'margin_20',  'tot', '', ''),
-    ('slc', 'contained', '30cm',  '', '', ''): ('slc', 'contained', 'margin_30',  'tot', '', ''),
-    ('slc', 'contained', '50cm',  '', '', ''): ('slc', 'contained', 'margin_50',  'tot', '', ''),
-    ('slc', 'contained', '75cm',  '', '', ''): ('slc', 'contained', 'margin_75',  'tot', '', ''),
-    ('slc', 'contained', '100cm', '', '', ''): ('slc', 'contained', 'margin_100', 'tot', '', ''),
-}
-
-
-def fix_contained_cols(df: pd.DataFrame) -> pd.DataFrame:
-    """Rename old-style containment columns to the current naming convention.
-
-    Old CV format: ``('slc', 'contained', 'Xcm', '', '', '')``
-    New format:    ``('slc', 'contained', 'margin_X', 'tot', '', '')``
-
-    Only columns that are present in the DataFrame are renamed; others are
-    silently skipped.  This fix is idempotent.
-    """
-    name = 'contained_cols'
-    if _skip_if_applied(df, name):
-        return df
-    rename_map = {old: new for old, new in _CONTAINED_COL_RENAME.items()
-                  if old in df.columns}
-    if rename_map:
-        df = df.rename(columns=rename_map)
-    return _mark_applied(df, name)
 
 
 # ---------------------------------------------------------------------------
@@ -185,9 +154,9 @@ def preprocess_mc(df: pd.DataFrame, *, flash_pe_scale: float = 0.66) -> pd.DataF
 
     Applies:
 
-    1. :func:`fix_contained_cols` — rename old-style containment column names
-    2. :func:`fix_flash_pe_scale` — flash PE calibration correction
-    3. :func:`add_phi`            — shower and track azimuthal angles
+    1. :func:`fix_flash_pe_scale`  — flash PE calibration correction
+    2. :func:`fix_sec_shw_energy`  — secondary shower energy from maxplane_energy
+    3. :func:`add_phi`             — shower and track azimuthal angles
 
     All fixes are idempotent; calling this on an already-preprocessed
     DataFrame is safe (each already-applied fix warns and skips).
@@ -199,8 +168,8 @@ def preprocess_mc(df: pd.DataFrame, *, flash_pe_scale: float = 0.66) -> pd.DataF
     flash_pe_scale : float
         Scale factor forwarded to :func:`fix_flash_pe_scale` (default 0.66).
     """
-    df = fix_contained_cols(df)
     df = fix_flash_pe_scale(df, scale=flash_pe_scale)
+    df = fix_sec_shw_energy(df)
     df = add_phi(df)
     return df
 
@@ -210,8 +179,9 @@ def preprocess_data(df: pd.DataFrame, *, flash_time_offset: float = 0.19) -> pd.
 
     Applies:
 
-    1. :func:`fix_flash_time` — flash time frame-offset correction
-    2. :func:`add_phi`        — shower and track azimuthal angles
+    1. :func:`fix_flash_time`     — flash time frame-offset correction
+    2. :func:`fix_sec_shw_energy` — secondary shower energy from maxplane_energy
+    3. :func:`add_phi`            — shower and track azimuthal angles
 
     All fixes are idempotent; calling this on an already-preprocessed
     DataFrame is safe (each already-applied fix warns and skips).
@@ -224,6 +194,7 @@ def preprocess_data(df: pd.DataFrame, *, flash_time_offset: float = 0.19) -> pd.
         Timing offset in µs forwarded to :func:`fix_flash_time` (default 0.19).
     """
     df = fix_flash_time(df, offset=flash_time_offset)
+    df = fix_sec_shw_energy(df)
     df = add_phi(df)
     return df
 
@@ -254,5 +225,123 @@ def add_phi(df: pd.DataFrame) -> pd.DataFrame:
 
     # Batch add columns to avoid fragmentation
     new_cols = pd.DataFrame({shw_col: shw_phi, trk_col: trk_phi})
+    df = pd.concat([df, new_cols], axis=1)
+    return _mark_applied(df, name)
+
+
+# ---------------------------------------------------------------------------
+# Pi0 fixes (opt-in — call after preprocess_mc / preprocess_data)
+# ---------------------------------------------------------------------------
+
+def fix_sec_shw_energy(df: pd.DataFrame, scale: float = 1.17) -> pd.DataFrame:
+    """Set secondary shower reco_energy from maxplane_energy * scale.
+
+    Mirrors what :func:`~nueana.selection.select` does for the primary shower.
+    Must be called before :func:`add_pi0` so the pi0 invariant mass uses the
+    scaled energy.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame containing ``secshw.shw.maxplane_energy``.
+    scale : float
+        Energy scale factor (default 1.17, matching the primary shower default).
+    """
+    name = 'sec_shw_energy'
+    if _skip_if_applied(df, name):
+        return df
+    col = ('secshw', 'shw', 'reco_energy', '', '', '')
+    df[col] = df.secshw.shw.maxplane_energy * scale
+    return _mark_applied(df, name)
+
+
+def add_pi0(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute pi0 kinematics from the primary and secondary shower.
+
+    Assumes ``primshw.shw.reco_energy`` and ``secshw.shw.reco_energy`` have
+    already been set (call :func:`fix_sec_shw_energy` first if needed).
+
+    Derived columns
+    ---------------
+    pi0.cos2angle             — cos of opening angle between the two showers
+    pi0.openangle             — opening angle in degrees
+    primshw.shw.p.{x,y,z}    — primary shower momentum vector
+    secshw.shw.p.{x,y,z}     — secondary shower momentum vector
+    pi0.mass                  — pi0 invariant mass [GeV]
+    pi0.p.{x,y,z}             — pi0 momentum vector
+    pi0.p.totp                — pi0 momentum magnitude
+    pi0.dir.{x,y,z}           — pi0 unit direction
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame containing primary and secondary shower direction and energy
+        columns.
+    """
+    name = 'pi0'
+    # if _skip_if_applied(df, name):
+    #     return df
+
+    def _valid(s, sentinel=-999):
+        return s.where(s != sentinel)
+
+    prim_E  = df.primshw.shw.reco_energy
+    sec_E   = df.secshw.shw.reco_energy
+    prim_dx = _valid(df.primshw.shw.dir.x)
+    prim_dy = _valid(df.primshw.shw.dir.y)
+    prim_dz = _valid(df.primshw.shw.dir.z)
+    sec_dx  = _valid(df.secshw.shw.dir.x)
+    sec_dy  = _valid(df.secshw.shw.dir.y)
+    sec_dz  = _valid(df.secshw.shw.dir.z)
+
+    cos2angle  = prim_dx*sec_dx + prim_dy*sec_dy + prim_dz*sec_dz
+    open_angle = np.degrees(np.arccos(cos2angle.clip(-1, 1)))
+
+    prim_px = prim_E * prim_dx
+    prim_py = prim_E * prim_dy
+    prim_pz = prim_E * prim_dz
+    sec_px  = sec_E  * sec_dx
+    sec_py  = sec_E  * sec_dy
+    sec_pz  = sec_E  * sec_dz
+
+    pi0_px  = prim_px + sec_px
+    pi0_py  = prim_py + sec_py
+    pi0_pz  = prim_pz + sec_pz
+    pi0_mag = np.sqrt(pi0_px**2 + pi0_py**2 + pi0_pz**2)
+
+    pi0_mag_safe = pi0_mag.where(pi0_mag > 0, other=np.nan)
+    pi0_dx = pi0_px / pi0_mag_safe
+    pi0_dy = pi0_py / pi0_mag_safe
+    pi0_dz = pi0_pz / pi0_mag_safe
+
+    pi0_mass = np.sqrt((2 * prim_E * sec_E * (1 - cos2angle)).clip(0))
+    
+    alpha = (prim_E - sec_E) / (prim_E + sec_E)
+    _denom = (1 - alpha**2) * (1 - cos2angle)
+    _denom_safe = np.where(_denom > 0, _denom, np.nan)
+    _arg = (2 / _denom_safe) - 1
+    pi0_mag_alt = 0.135 * np.sqrt(np.where(_arg >= 0, _arg, np.nan))
+
+    new_cols = pd.DataFrame({
+        ('pi0',    'cos2angle', '',    '', '', ''): cos2angle,
+        ('pi0',    'openangle', '',    '', '', ''): open_angle,
+        ('primshw', 'shw',     'p', 'x', '', ''): prim_px,
+        ('primshw', 'shw',     'p', 'y', '', ''): prim_py,
+        ('primshw', 'shw',     'p', 'z', '', ''): prim_pz,
+        ('secshw',  'shw',     'p', 'x', '', ''): sec_px,
+        ('secshw',  'shw',     'p', 'y', '', ''): sec_py,
+        ('secshw',  'shw',     'p', 'z', '', ''): sec_pz,
+        ('pi0',    'mass',      '',    '', '', ''): pi0_mass,
+        ('pi0',    'p',        'x',    '', '', ''): pi0_px,
+        ('pi0',    'p',        'y',    '', '', ''): pi0_py,
+        ('pi0',    'p',        'z',    '', '', ''): pi0_pz,
+        ('pi0',    'p',        'totp', '', '', ''): pi0_mag,
+        ('pi0',    'p',        'totp_alt', '', '', ''): pi0_mag_alt,
+        ('pi0',    'alpha',     '',    '', '', ''): alpha,
+        ('pi0',    'dir',      'x',    '', '', ''): pi0_dx,
+        ('pi0',    'dir',      'y',    '', '', ''): pi0_dy,
+        ('pi0',    'dir',      'z',    '', '', ''): pi0_dz,
+    }, index=df.index)
+
     df = pd.concat([df, new_cols], axis=1)
     return _mark_applied(df, name)
