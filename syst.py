@@ -424,6 +424,7 @@ def get_detvar_systs(detvar_dict, var, bins,
     a unisim; if it is a list of DataFrames it is treated as a multisim.
     """
     _needs_select = cuts is not None or bool(select_kwargs)
+    if _needs_select: print("Applying selection to detector variation samples...")
     _sel_kw = dict(savedict=False, cuts=cuts, **select_kwargs)
 
     matrices_dict = {}
