@@ -184,10 +184,12 @@ def InScore(df, score_cut=0.02):
 # ---------------------------------------------------------------------------
 
 DEFAULT_CUTS = [
+    CutSpec("fiducial_volume", fn=lambda df: InFV(df.slc.vertex, det="SBND_nu26", inzback=0), label="fiducial volume"),
+    CutSpec("contained",       fn=lambda df: df.slc.contained.margin_5.tot==True, label="contained"),
+    CutSpec("nohighyz",        fn=lambda df: df.slc.pfp_notinhigh==True, label="nohighyz"),
     CutSpec("flash_pe",        variable=("slc", "barycenterFM", "flashPEs"),  min=2e3,   label="flash PE > 2000"),
     CutSpec("nu_score",        variable=("slc", "nu_score"),                  min=0.5,   label="nu score > 0.5"),
     CutSpec("clear_cosmic",    fn=lambda df: df.slc.is_clear_cosmic == 0,                label="clear cosmic"),
-    CutSpec("fiducial_volume", fn=lambda df: InFV(df.slc.vertex, det="SBND_nu26", inzback=0), label="fiducial volume"),
     CutSpec("flash_time",      variable=("slc", "barycenterFM", "flashTime"), min=0.335, max=1.935, label="flash time [0.335, 1.935] µs"),
     CutSpec("flash_score",     variable=("slc", "barycenterFM", "score"),     min=0.02,             label="flash score > 0.02"),
     CutSpec("shower_energy",   variable=("primshw", "shw", "reco_energy"),    min=0.5,              label="shower energy > 0.5 GeV"),
