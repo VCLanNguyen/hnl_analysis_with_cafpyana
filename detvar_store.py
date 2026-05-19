@@ -54,9 +54,17 @@ from .io import load_dfs
 __all__ = ['DetVarFile', 'prepare_detvar_df', 'write_detvar_store', 'load_detvar_dict', 'detvar_store_info', 'apply_selection']
 
 _DEFAULT_EXT_MATCH_COL = ['run', 'subrun', 'evt', 'E']
-_DEFAULT_EMAX_LEVELS   = [0, 1, 3]   # __ntuple, entry, file_idx (skips rec.mc.nu..index)
 _DEFAULT_INT_MATCH_COL = ['__ntuple', 'entry', 'file_idx']
 _HDF_KW            = dict(format='fixed')
+
+
+def _ensure_file_idx(df: pd.DataFrame, default: int = 0) -> pd.DataFrame:
+    """Append file_idx=default as an index level if not already present."""
+    if 'file_idx' not in df.index.names:
+        df = df.copy()
+        df['file_idx'] = default
+        df = df.set_index('file_idx', append=True)
+    return df
 
 DetVarFile = namedtuple('DetVarFile', ['lite_df', 'slc_df'])
 """Named tuple returned by prepare_detvar_df.
@@ -80,7 +88,6 @@ def prepare_detvar_df(
     file: str,
     ext_match_col: list | None = None,
     e_col: str = 'E',
-    emax_levels: list | None = None,
     nulite_key: str = 'nulite',
     slc_key: str = 'nuecc',
 ) -> DetVarFile:
@@ -91,6 +98,9 @@ def prepare_detvar_df(
     raw nuecc table. The intersection and internal filtering happen later in
     :func:`write_detvar_store`.
 
+    If ``file_idx`` is absent from either DataFrame's index it is added with
+    a default value of 0.
+
     Parameters
     ----------
     file : str
@@ -100,9 +110,6 @@ def prepare_detvar_df(
         Defaults to ``['run', 'subrun', 'evt', 'E']``.
     e_col : str, optional
         Top-level column name for neutrino energy (default ``'E'``).
-    emax_levels : list of int, optional
-        Index levels that define a unique event for the per-event E_max filter
-        (default ``[0, 1, 3]``, i.e. ``__ntuple``, ``entry``, ``file_idx``).
     nulite_key : str, optional
         Table key for the light neutrino table (default ``'nulite'``).
     slc_key : str, optional
@@ -117,17 +124,18 @@ def prepare_detvar_df(
     """
     if ext_match_col is None:
         ext_match_col = _DEFAULT_EXT_MATCH_COL
-    if emax_levels is None:
-        emax_levels = _DEFAULT_EMAX_LEVELS
 
     dfs = load_dfs(file, [nulite_key, slc_key])
 
-    lite_df = dfs[nulite_key]
-    e_max_per_event = lite_df.groupby(level=emax_levels)[e_col].transform('max')
+    lite_df = _ensure_file_idx(dfs[nulite_key])
+    slc_df  = _ensure_file_idx(dfs[slc_key])
+
+    emax_names = [n for n in lite_df.index.names if n in _DEFAULT_INT_MATCH_COL]
+    e_max_per_event = lite_df.groupby(level=emax_names)[e_col].transform('max')
     lite_df = lite_df[lite_df[e_col] == e_max_per_event]
     lite_df = lite_df.reset_index().set_index(ext_match_col)
 
-    return DetVarFile(lite_df=lite_df, slc_df=dfs[slc_key])
+    return DetVarFile(lite_df=lite_df, slc_df=slc_df)
 
 
 # ---------------------------------------------------------------------------
