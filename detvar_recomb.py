@@ -89,13 +89,16 @@ def _get(df, *keys):
     return df[key] if key in df.columns else None
 
 
-def _set(df, *keys, value):
-    """Return a copy of df with one column replaced; no-op if the column is absent."""
+def _set(df, *keys, value, sentinel=-999):
+    """Return a copy of df with one column replaced; no-op if the column is absent.
+    Entries equal to *sentinel* in the original column are left unchanged."""
     key = _pad(df, *keys)
     if key not in df.columns:
         return df
     out = df.copy()
+    orig = out[key]
     out[key] = value
+    out.loc[orig == sentinel, key] = sentinel
     return out
 
 
