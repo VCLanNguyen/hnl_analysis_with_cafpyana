@@ -110,6 +110,11 @@ class SystematicsInput:
     xsec_inputs: object = None
     detvar_dict: object = None
 
+    def to_kwargs(self) -> dict:
+        """Return fields as a dict suitable for unpacking into get_total_cov."""
+        from dataclasses import fields
+        return {f.name: getattr(self, f.name) for f in fields(self)}
+
 
 @dataclass
 class PlottingConfig:
