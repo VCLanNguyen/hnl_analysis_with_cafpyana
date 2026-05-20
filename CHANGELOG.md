@@ -5,6 +5,114 @@ top each time changes are merged that other users should know about.
 
 ---
 
+## 2026-05-20 — High-level loaders, detvar append mode, plotting updates
+
+### Bug fixes
+
+**`detvar_recomb` — -999 sentinel values preserved during detector variations**
+Columns whose entries equal -999 (dummy / not-filled values) are now left unchanged
+when a detector variation modifies that column. Previously the variation value was
+written unconditionally, producing physically meaningless altered dummies.
+
+**`detvar_store` — emax grouping robustified**
+The nulite reduction step (keep one row per event at the highest-energy neutrino
+interaction) now groups on column names rather than positional levels, avoiding failures
+when the MultiIndex depth differs between files.
+
+**`selection` — containment cut applied after cosmic-rejection cut**
+The fiducial containment cut was previously applied before cosmic rejection. It is now
+placed after cosmic rejection in the standard cut sequence, matching the intended order.
+
+**`load_mc` — defragmentation of concatenated result**
+`pd.concat` of many per-split chunks produces an internally fragmented DataFrame.
+A `.copy()` on the return value consolidates the block layout so downstream column
+additions do not trigger `PerformanceWarning`.
+
+---
+
+### New features
+
+**`io.py` — `load_mc` and `load_data` high-level loaders**
+
+Load, preprocess, and optionally select a full MC or data HDF5 file in one call:
+
+```python
+mc_df, mc_pot, mc_ngen = nue.load_mc(
+    "/path/to/mc.df",
+    cuts=nue.DEFAULT_CUTS,   # optional; omit to get the full preprocessed df
+    add_pi0=True,            # opt-in pi0 kinematics
+)
+
+data_df, data_pot, ngates = nue.load_data(
+    "/path/to/data.df",
+    cuts=nue.DEFAULT_CUTS,
+    onbeam=True,
+)
+```
+
+`load_mc` loads split-by-split to minimise peak memory, accumulates POT and generated
+events, merges header (run/subrun/event) columns, and calls `define_signal`.
+
+---
+
+**`detvar_store` — selective group reprocessing with `mode='a'`**
+
+`write_detvar_store` now accepts `mode='a'` to patch specific DV groups into an
+existing store without rebuilding it entirely:
+
+```python
+# Rewrite only the groups mapped to cv_0; leave all others untouched
+write_detvar_store(
+    "detvars_signal.h5",
+    cv_dict={"cv_0": cv0},
+    dv_dict={"wiremodxw_0": xw0, "wiremodyz_0": yz0},
+    cv_map={"wiremodxw_0": "cv_0", "wiremodyz_0": "cv_0"},
+    mode='a',
+)
+```
+
+Raises `ValueError` if a CV being overwritten has dependent groups in the existing
+store that are not included in the update (their iloc indices would become stale).
+Falls back to `mode='w'` if the output file does not yet exist.
+
+---
+
+**`classes.py` — `SystematicsInput.to_kwargs()`**
+
+`SystematicsInput` now has a `to_kwargs()` method for passing all fields directly
+to `get_total_cov`:
+
+```python
+systs = SystematicsInput(mcbnb_pot=mc_pot, select_region="signal")
+output = nue.get_total_cov(reco_df, reco_var, bins, **systs.to_kwargs())
+```
+
+---
+
+**`plotting.py` — `last_updated` stamp and ratio panel limits**
+
+`annotate_internal` and `PlottingConfig` accept a `last_updated=True` flag that
+stamps today's ISO date in the upper-right corner of the plot:
+
+```python
+cfg = PlottingConfig(last_updated=True)
+```
+
+`PlottingConfig` also exposes `ratio_min` and `ratio_max` (default 0 and 2) to
+control the data/MC ratio panel y-axis range.
+
+---
+
+### Behaviour change
+
+**`load_detvar_dict` — `preprocess_fn` now defaults to `None`**
+Previously the function defaulted to applying `preprocess_mc` on load. Stores
+written by `write_detvar_store` (via `process_detvars.py`) are preprocessed at write
+time, so re-applying on load was redundant. The default is now `None` (no-op). Pass
+an explicit callable if you need additional transforms at load time.
+
+---
+
 ## 2026-05-11 — HDF5 DetVar store, calorimetry detector variations, integral syst percentages
 
 ### Bug fixes
