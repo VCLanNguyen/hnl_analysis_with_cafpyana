@@ -45,6 +45,7 @@ Step 3 — load at analysis time:
     # each entry: {'dv_df': df_or_list, 'cv_df': df, 'pot': float}
 """
 
+import os
 import warnings
 import numpy as np
 import pandas as pd
@@ -176,6 +177,7 @@ def write_detvar_store(
     cv_dict: dict,
     dv_dict: dict,
     cv_map: dict,
+    mode: str = 'w',
 ) -> None:
     """Write a DetVar HDF5 store.
 
@@ -193,7 +195,7 @@ def write_detvar_store(
     Parameters
     ----------
     outfile : str
-        Output HDF5 file path (will be created or overwritten).
+        Output HDF5 file path.
     cv_dict : dict[str, DetVarFile]
         CV files keyed by an arbitrary name.
         Each value must be a :class:`DetVarFile` from :func:`prepare_detvar_df`.
@@ -202,6 +204,14 @@ def write_detvar_store(
         unisim variations or a list for multisim groups.
     cv_map : dict[str, str]
         Maps each group name in ``dv_dict`` to a key in ``cv_dict``.
+    mode : {'w', 'a'}, default 'w'
+        ``'w'`` creates or fully overwrites the store.
+        ``'a'`` patches only the groups in ``dv_dict`` into an existing store,
+        leaving all other groups untouched.  Falls back to ``'w'`` if the file
+        does not exist yet.  Raises ``ValueError`` if a CV being rewritten is
+        also depended on by groups that are *not* in ``dv_dict`` (those groups'
+        iloc indices would become invalid); include all affected groups in the
+        call to avoid this.
 
     Notes
     -----
@@ -212,12 +222,51 @@ def write_detvar_store(
     """
     _validate_inputs(cv_dict, dv_dict, cv_map)
 
+    if mode == 'a' and not os.path.exists(outfile):
+        print(f"  (store not found; writing fresh)")
+        mode = 'w'
+
     kw = _HDF_KW
 
     meta_rows    = []
     written_cvs: set[str] = set()
+    preserved_meta: pd.DataFrame | None = None
 
-    with warnings.catch_warnings(), pd.HDFStore(outfile, mode='w') as store:
+    if mode == 'a':
+        with pd.HDFStore(outfile, mode='r') as _store:
+            existing_meta = _store['meta'] if 'meta' in _store else pd.DataFrame(
+                columns=['cv_key', 'n_dv', 'pot'], dtype=object
+            )
+            existing_meta.index.name = 'group'
+
+            # Safety: if a CV is being overwritten, all groups using it must be in dv_dict
+            cvs_to_write = {cv_map[g] for g in dv_dict}
+            for cv_key in cvs_to_write:
+                if f'cv/{cv_key}' in _store:
+                    dependent = existing_meta[existing_meta['cv_key'] == cv_key].index.tolist()
+                    stale = set(dependent) - set(dv_dict)
+                    if stale:
+                        raise ValueError(
+                            f"CV '{cv_key}' must be rewritten but groups {sorted(stale)} in "
+                            f"the existing store also depend on it — their iloc indices would "
+                            f"become invalid.  Add them to --groups to keep the store consistent."
+                        )
+
+        preserved_meta = existing_meta[~existing_meta.index.isin(dv_dict)]
+
+        # Remove stale keys for groups about to be overwritten
+        with pd.HDFStore(outfile, mode='a') as _store:
+            for group in dv_dict:
+                for key in [f'cv_iloc/{group}', f'dv/{group}/v0', f'dv/{group}/v1']:
+                    if key in _store:
+                        _store.remove(key)
+            for cv_key in cvs_to_write:
+                if f'cv/{cv_key}' in _store:
+                    _store.remove(f'cv/{cv_key}')
+            if 'meta' in _store:
+                _store.remove('meta')
+
+    with warnings.catch_warnings(), pd.HDFStore(outfile, mode=mode) as store:
         warnings.filterwarnings('ignore', '.*not a valid Python identifier.*')
         warnings.filterwarnings('ignore', category=pd.errors.PerformanceWarning)
         for group, dv_entry in dv_dict.items():
@@ -284,6 +333,8 @@ def write_detvar_store(
             })
 
         meta = pd.DataFrame(meta_rows).set_index('group')
+        if preserved_meta is not None:
+            meta = pd.concat([preserved_meta, meta])
         store.put('meta', meta, **kw)
 
     print(f"Wrote {outfile}")
@@ -311,12 +362,12 @@ def load_detvar_dict(
         Path to an HDF5 file written by :func:`write_detvar_store`.
     groups : list of str, optional
         Subset of group names to load. If None, all groups are loaded.
-    preprocess_fn : callable, optional
+    preprocess_fn : callable or None, optional
         Function applied to each loaded DataFrame before it is stored in the
-        output dict.  Signature: ``fn(df) -> df``.  Defaults to
-        :func:`~nueana.preprocess.preprocess_mc`.  Pass ``None`` to use the
-        default, or pass an explicit callable to override.  Pass
-        ``preprocess_fn=lambda df: df`` to skip preprocessing entirely.
+        output dict.  Signature: ``fn(df) -> df``.  Defaults to ``None``
+        (no preprocessing), since stores written by :func:`process_detvars`
+        are already preprocessed at write time.  Pass an explicit callable
+        to apply additional transforms on load.
 
     Returns
     -------
@@ -324,11 +375,7 @@ def load_detvar_dict(
         Maps each group name to ``{'dv_df': df_or_list, 'cv_df': df, 'pot': float}``.
     """
     _preprocess_label = None
-    if preprocess_fn is None:
-        from .preprocess import preprocess_mc
-        preprocess_fn    = preprocess_mc
-        _preprocess_label = "preprocess_mc (default)"
-    else:
+    if preprocess_fn is not None:
         _preprocess_label = getattr(preprocess_fn, '__name__', repr(preprocess_fn))
 
     meta = pd.read_hdf(h5file, 'meta')
@@ -348,14 +395,19 @@ def load_detvar_dict(
         for group, row in meta.iterrows():
             cv_key = row['cv_key']
             if cv_key not in cv_cache:
-                cv_cache[cv_key] = preprocess_fn(store[f'cv/{cv_key}'])
+                cv_df = store[f'cv/{cv_key}']
+                cv_cache[cv_key] = preprocess_fn(cv_df) if preprocess_fn is not None else cv_df
             cv_full = cv_cache[cv_key]
 
             cv_iloc    = store[f'cv_iloc/{group}'].values
             cv_matched = cv_full.iloc[cv_iloc]
 
             n_dv   = int(row['n_dv'])
-            dv_dfs = [preprocess_fn(store[f'dv/{group}/v{i}']) for i in range(n_dv)]
+            dv_dfs = [
+                preprocess_fn(store[f'dv/{group}/v{i}']) if preprocess_fn is not None
+                else store[f'dv/{group}/v{i}']
+                for i in range(n_dv)
+            ]
 
             out[group] = {
                 'dv_df': dv_dfs if n_dv > 1 else dv_dfs[0],
@@ -363,7 +415,8 @@ def load_detvar_dict(
                 'pot':   float(row['pot']),
             }
 
-    print(f"Loaded {len(out)} detvar group(s) from {h5file}  [preprocess: {_preprocess_label}]")
+    preprocess_str = _preprocess_label if _preprocess_label is not None else "none"
+    print(f"Loaded {len(out)} detvar group(s) from {h5file}  [preprocess: {preprocess_str}]")
     print(f"  Keys: {list(out.keys())}")
 
     _col_warnings = []
