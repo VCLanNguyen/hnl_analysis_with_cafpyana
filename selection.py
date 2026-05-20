@@ -27,6 +27,8 @@ customising is straightforward with :func:`modify_cut`:
                       fn=partial(cut_muon_rejection, max_track_length=100))
 """
 
+import warnings
+
 import numpy as np
 import pandas as pd
 from dataclasses import dataclass, replace
@@ -185,9 +187,11 @@ DEFAULT_CUTS = [
     CutSpec("flash_pe",        variable=("slc", "barycenterFM", "flashPEs"),  min=2e3,   label="flash PE > 2000"),
     CutSpec("nu_score",        variable=("slc", "nu_score"),                  min=0.5,   label="nu score > 0.5"),
     CutSpec("clear_cosmic",    fn=lambda df: df.slc.is_clear_cosmic == 0,                label="clear cosmic"),
-    CutSpec("fiducial_volume", fn=lambda df: InFV(df.slc.vertex, det="SBND_nohighyz", inzback=0), label="fiducial volume"),
     CutSpec("flash_time",      variable=("slc", "barycenterFM", "flashTime"), min=0.335, max=1.935, label="flash time [0.335, 1.935] µs"),
     CutSpec("flash_score",     variable=("slc", "barycenterFM", "score"),     min=0.02,             label="flash score > 0.02"),
+    CutSpec("fiducial_volume", fn=lambda df: InFV(df.slc.vertex, det="SBND_nu26", inzback=0), label="fiducial volume"),
+    CutSpec("contained",       fn=lambda df: df.slc.contained.margin_5.tot==True, label="contained"),
+    CutSpec("nohighyz",        fn=lambda df: df.slc.pfp_notinhigh==True, label="nohighyz"),
     CutSpec("shower_energy",   variable=("primshw", "shw", "reco_energy"),    min=0.5,              label="shower energy > 0.5 GeV"),
     CutSpec("muon_rejection",  fn=cut_muon_rejection,                                              label="track length < 200 cm"),
     CutSpec("conversion_gap",  variable=("primshw", "shw", "conversion_gap"), min=0.001, max=2,    label="conversion gap [0.001, 2] cm"),
@@ -214,7 +218,8 @@ def select(indf,
            stage=None,
            savedict=False,
            spring=True,
-           shower_scale=1.17):
+           shower_scale=1.17,
+           check_preprocessed=True):
     """Apply a sequence of cuts to a DataFrame.
 
     Parameters
@@ -235,6 +240,10 @@ def select(indf,
         ``primshw.shw.reco_energy`` before cuts are applied.
     shower_scale : float, default 1.17
         Scale factor applied to shower energy.
+    check_preprocessed : bool, default True
+        If True, warn when no preprocessing fixes (``_fix_*`` columns)
+        are detected on ``indf``. Suppress with ``check_preprocessed=False``
+        for DataFrames where preprocessing is not applicable.
 
     Returns
     -------
@@ -243,6 +252,15 @@ def select(indf,
         ``savedict=True`` or ``stage`` is set.
     """
     cuts = DEFAULT_CUTS if cuts is None else cuts
+
+    if check_preprocessed:
+        from .preprocess import applied_fixes
+        if not applied_fixes(indf):
+            warnings.warn(
+                "No preprocessing fixes detected on this DataFrame. "
+                "Call preprocess_mc() or preprocess_data() before select().",
+                stacklevel=2,
+            )
 
     if stage is not None and stage not in {c.name for c in cuts}:
         raise ValueError(
@@ -297,7 +315,7 @@ def define_signal(indf: pd.DataFrame, prefix=None):
 
     mcdf = nudf[prefix] if prefix is not None else nudf
 
-    whereFV = InFV(mcdf.position, det="SBND_nohighyz", inzback=0)
+    whereFV = InFV(mcdf.position, det="SBND_nu26", inzback=0)
     whereAV = InAV(df=mcdf.position)
     whereCCnue = (
         (mcdf.iscc == 1)

@@ -42,11 +42,12 @@ from .constants import (signal_dict, signal_categories,
 from .utils import ensure_lexsorted
 from .syst import get_syst
 from .histogram import get_hist1d
-from .classes import PlottingConfig, VariableConfig
+from .classes import PlottingConfig, VariableConfig, SystematicsInput
 
 def annotate_internal(ax):
-    """Stamp 'SBND Internal' in the upper-left corner of *ax*."""
-    ax.annotate("SBND Internal", xy=(0.0, 1.02), xycoords='axes fraction', ha='left',color='gray',fontweight='bold')
+    """Stamp 'SBND Internal' in the upper-left and the tune label in the upper-right of *ax*."""
+    ax.annotate("SBND Internal", xy=(0.0, 1.02), xycoords='axes fraction', ha='left', color='gray', fontweight='bold')
+    ax.annotate("GENIE v3.40 AR23_00i_00_000", xy=(1.0, 1.02), xycoords='axes fraction', ha='right', color='gray')
 
 def plot_var(df: pd.DataFrame,
              var: tuple | str,
@@ -100,7 +101,7 @@ def plot_var(df: pd.DataFrame,
         x-values at which to draw vertical dashed cut lines.
     plot_err : bool, default True
         If True, draw MC error bands (stat and/or syst).
-    systs : True | np.ndarray | None, default None
+    systs : True | np.ndarray | SystematicsInput | None, default None
         Controls how uncertainties are computed and displayed:
 
         - ``True``: read universe columns from ``df`` via :func:`~nueana.syst.get_syst`.
@@ -108,6 +109,8 @@ def plot_var(df: pd.DataFrame,
           stat and syst bands are drawn separately.
         - ``np.ndarray``: treat as a pre-computed ``(n_bins, n_bins)`` total covariance
           matrix (stat already included). A single combined band is drawn.
+        - :class:`~nueana.classes.SystematicsInput`: call :func:`~nueana.funcs.get_total_cov`
+          on-the-fly with the bundled parameters and use the resulting ``rate_cov``.
         - ``None`` (default): MC stat error only (diagonal, sum-of-weights-squared).
     pdg : bool, default False
         Stack by PDG code rather than signal type.
@@ -192,9 +195,6 @@ def plot_var(df: pd.DataFrame,
     stats_err   = np.zeros(len(bins)-1)
     systs_err   = np.zeros(len(bins)-1)
     total_cov   = np.zeros((len(bins)-1, len(bins)-1))
-    
-    # Check if systs is provided as array (already includes stats)
-    systs_is_array = isinstance(systs, np.ndarray)
 
     if (pdg==False) & (mode==False):
         for i, (key, entry) in enumerate(categories.items()):
@@ -300,6 +300,30 @@ def plot_var(df: pd.DataFrame,
         systs_arr = np.sqrt(np.clip(np.diag(total_cov), a_min=0.0, a_max=None))
         syst_dict = {}
         calc_separate_mcstat = False
+
+    elif isinstance(systs, SystematicsInput) or type(systs).__name__ == 'SystematicsInput':
+        # Case 4: call get_total_cov on-the-fly with the bundled parameters.
+        from .funcs import get_total_cov
+        _output = get_total_cov(
+            reco_df=df, reco_var=var, bins=bins,
+            mcbnb_pot=systs.mcbnb_pot,
+            cuts=systs.cuts,
+            projected_pot=systs.projected_pot,
+            mcbnb_ngen=systs.mcbnb_ngen,
+            intime_threshold=systs.intime_threshold,
+            event_type=systs.event_type,
+            select_region=systs.select_region,
+            uncertainty_keys=systs.uncertainty_keys,
+            xsec_inputs=systs.xsec_inputs,
+            detvar_dict=systs.detvar_dict,
+        )
+        total_cov = np.array(_output.rate_cov, dtype=float, copy=True)
+        # get_total_cov returns the covariance on the flux-normalized rates
+        # want to obtain the covariance on the MC histogram counts before scaling by POT and flux
+        total_cov *= (integrated_flux * (systs.mcbnb_pot/1e6))**2
+        systs_arr = np.sqrt(np.clip(np.diag(total_cov), a_min=0.0, a_max=None))
+        syst_dict = dict(_output.rate_syst_dict)
+        calc_separate_mcstat = not any(str(k).lower() == 'mcstat' for k in syst_dict)
 
     elif systs is True:
         # Case 1: inherit systematics from universe columns in the dataframe.
@@ -536,6 +560,8 @@ def plot_mc_data(mc_df: pd.DataFrame,
     """
     _p = {f.name: getattr(config, f.name) for f in _dc_fields(config)} if config is not None else {}
     _p.update(kwargs)
+    ratio_min = _p.get('ratio_min', ratio_min)
+    ratio_max = _p.get('ratio_max', ratio_max)
     fig = plt.figure(figsize=figsize)
     gs = GridSpec(2, 1, height_ratios=[6, 1], hspace=0.4)
     ax_main = fig.add_subplot(gs[0])
@@ -669,7 +695,7 @@ def plot_mc_data(mc_df: pd.DataFrame,
 
     if savefig!="":
         plt.savefig(savefig,bbox_inches='tight')
-    
+
     return fig, ax_main, ax_sub, mc_dict
 
 
@@ -842,7 +868,7 @@ def plot_syst_category_breakdown(angle_syst_df: pd.DataFrame,
     axes[1].set_xticks(angle_bins)
     if angle_bin_labels is not None:
         axes[1].set_xticklabels(angle_bin_labels)
-    axes[1].legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    axes[1].legend(bbox_to_anchor=(1.05, 1), loc='upper left',title="Uncertainty Sources (Normalization %)")
     for ax in axes:
         ax.annotate(text=region_label, xy=(0.02, 0.925), xycoords='axes fraction', fontsize=11, fontweight='bold', alpha=0.5)
 

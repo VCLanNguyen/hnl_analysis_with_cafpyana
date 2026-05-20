@@ -30,7 +30,7 @@ def electron_direction() -> VariableConfig:
         var_plot_name="$\\cos\\theta_{e-}$",
         var_unit="",
         bins=np.array([0.5, 0.6, 0.75, 0.85, 0.925, 1.0]),
-        bin_labels=np.array([0.0, 0.6, 0.75, 0.85, 0.925, 1.0]),
+        bin_labels=np.array([-1.0, 0.6, 0.75, 0.85, 0.925, 1.0]),
         var_evt_reco_col=('primshw', 'shw', 'dir', 'z'),
         var_evt_truth_col=('slc','truth','e', 'dir', 'z'),
         var_nu_col=('e', 'dir', 'z'),

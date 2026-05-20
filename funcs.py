@@ -10,6 +10,7 @@ from .syst import calc_matrices, get_syst, get_syst_df, get_detvar_systs
 from .detvar_store import load_detvar_dict
 from .classes import SystematicsOutput, XSecInputs
 from .constants import integrated_flux, signal_dict, POT_NORM_UNC, NTARGETS_UNC
+from .preprocess import preprocess_mc, add_pi0
 from . import config
 
 __all__ = [
@@ -343,13 +344,16 @@ def get_intime_cov(selected_df, var, bins,
                    **select_kwargs):
     mcint_dfs = load_dfs(config.INTIME_FILE, ['histgenevtdf', 'nuecc'])
     scale = mcbnb_ngen / mcint_dfs['histgenevtdf'].TotalGenEvents.sum()
+    mcint_df = mcint_dfs['nuecc']
+    mcint_df = preprocess_mc(mcint_df)
+    mcint_df = add_pi0(mcint_df)
 
     if select_region == "signal":
-        mcint_df = select(mcint_dfs['nuecc'], savedict=False, cuts=cuts, **select_kwargs)
+        mcint_df = select(mcint_df, savedict=False, cuts=cuts, **select_kwargs)
     elif select_region == "control":
-        mcint_df = select_sideband(mcint_dfs['nuecc'], savedict=False, cuts=cuts, **select_kwargs)
+        mcint_df = select_sideband(mcint_df, savedict=False, cuts=cuts, **select_kwargs)
     else:
-        mcint_df = select(mcint_dfs['nuecc'], savedict=False, cuts=cuts, **select_kwargs)
+        mcint_df = select(mcint_df, savedict=False, cuts=cuts, **select_kwargs)
 
     mcint_df[('flux_pot_norm', '', '', '', '', '')] = scale / (integrated_flux * (mcbnb_pot / 1e6))
     selected_df = apply_event_mask(ensure_lexsorted(selected_df, axis=1), event_type)

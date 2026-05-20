@@ -64,6 +64,58 @@ class SystematicsOutput:
         return self.xsec_cov is not None
 
 
+@dataclass(frozen=True)
+class SystematicsInput:
+    """Arguments forwarded to :func:`~nueana.funcs.get_total_cov` at plot time.
+
+    Pass an instance as ``systs`` to :func:`~nueana.plotting.plot_var` or
+    :func:`~nueana.plotting.plot_mc_data` to compute the full covariance
+    matrix on-the-fly inside the plotting call.
+
+    All fields map 1-to-1 to the corresponding :func:`~nueana.funcs.get_total_cov`
+    parameters; ``reco_df``, ``reco_var``, and ``bins`` are supplied automatically
+    from the plotting function's own arguments.
+
+    Parameters
+    ----------
+    mcbnb_pot : float
+        MC BNB POT for normalisation.
+    cuts : list of CutSpec, optional
+        Custom cut sequence for detector-variation selection.
+    projected_pot : float, default 1e20
+        POT used for the data-statistics estimate.
+    mcbnb_ngen : float, optional
+        Number of generated events; required for in-time cosmic uncertainty.
+    intime_threshold : float, default 0.05
+        Floor threshold for the in-time cosmic uncertainty.
+    event_type : str or None, default 'all'
+        Event mask forwarded to :func:`~nueana.utils.apply_event_mask`.
+    select_region : str, default 'signal'
+        Detector variation region: ``'signal'``, ``'control'``, or ``'all'``.
+    uncertainty_keys : list of str, optional
+        Subset of uncertainty blocks to compute.  Defaults to all available.
+    xsec_inputs : XSecInputs, optional
+        Cross-section inputs; required when ``'xsec'`` is in ``uncertainty_keys``.
+    detvar_dict : dict, optional
+        Pre-loaded detector variation dictionary (avoids repeated disk reads).
+    """
+    mcbnb_pot: float
+    cuts: object = None
+    projected_pot: float = 1e20
+    mcbnb_ngen: float | None = None
+    intime_threshold: float = 0.05
+    event_type: str | None = "all"
+    select_region: str = "signal"
+    uncertainty_keys: object = None
+    xsec_inputs: object = None
+    detvar_dict: object = None
+
+    def to_kwargs(self) -> dict:
+        """Return fields as a dict suitable for unpacking into get_total_cov."""
+        from dataclasses import fields
+        return {f.name: getattr(self, f.name) for f in fields(self)}
+
+
 @dataclass
 class PlottingConfig:
     """Style and display options for plot_var and plot_mc_data.
@@ -82,7 +134,7 @@ class PlottingConfig:
     mult_factor: float = 1.0
     cut_val: list[float] | None = None
     plot_err: bool = True
-    systs: bool | np.ndarray | None = None
+    systs: bool | np.ndarray | SystematicsInput | None = None
     pdg: bool = False
     pdg_col: tuple | str = 'pfp_shw_truth_p_pdg'
     mode: bool = False
@@ -91,11 +143,14 @@ class PlottingConfig:
     generic: bool = False
     overflow: bool = True
     legend_kwargs: dict | None = None
+    ratio_min: float = 0.0
+    ratio_max: float = 2.0
 
 
 __all__ = [
     'VariableConfig',
     'XSecInputs',
     'SystematicsOutput',
+    'SystematicsInput',
     'PlottingConfig',
 ]

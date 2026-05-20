@@ -22,16 +22,17 @@ plotting, and uncertainty studies.
 - `constants.py`: Signal/background category dicts, physics constants, flux values.
 - `classes.py`: Core dataclasses for analysis variables, cross-section inputs, systematics results, and plot configuration.
 - `variables.py`: Pre-built analysis variable definitions (bins, column names, labels).
+- `preprocess.py`: DataFrame preprocessing — column fixes, pi0 kinematics, secondary shower energy corrections.
 - `selection.py`: Event selection pipeline and MC truth signal labeling.
 - `preprocess.py`: Idempotent preprocessing fixes for MC and data (flash PE scaling, column renames, derived columns).
 - `plotting.py`: Stacked MC, data overlay, data/MC ratio, systematics breakdown, and DetVar comparison plots.
 - `funcs.py`: High-level systematics driver — total covariance calculation and custom uncertainty helpers.
 - `syst.py`: Low-level systematics — universe histograms, covariance matrices, detector variations.
-- `detvar_store.py`: HDF5-based DetVar store — write, load, inspect, and apply selection to DetVar dictionaries.
-- `detvar_recomb.py`: Software-based calorimetry detector variations derived from recombination parameter shifts.
+- `detvar_store.py`: HDF5-based detector variation store — write, read, and selective group updates.
+- `detvar_recomb.py`: Software calorimetry detector variations derived from a reference CV sample.
 - `histogram.py`: Histogram wrappers with overflow handling.
 - `utils.py`: DataFrame helpers for MultiIndex sorting, header merging, and event masking.
-- `io.py`: Split-HDF5 dataframe loading.
+- `io.py`: HDF5 dataframe loading — split-file primitives (`load_dfs`) and high-level loaders (`load_mc`, `load_data`).
 - `geometry.py`: Detector geometry checks.
 
 ## Quickstart for a new analysis

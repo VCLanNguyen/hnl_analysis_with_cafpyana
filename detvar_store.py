@@ -45,6 +45,7 @@ Step 3 — load at analysis time:
     # each entry: {'dv_df': df_or_list, 'cv_df': df, 'pot': float}
 """
 
+import os
 import warnings
 import numpy as np
 import pandas as pd
@@ -54,9 +55,17 @@ from .io import load_dfs
 __all__ = ['DetVarFile', 'prepare_detvar_df', 'write_detvar_store', 'load_detvar_dict', 'detvar_store_info', 'apply_selection']
 
 _DEFAULT_EXT_MATCH_COL = ['run', 'subrun', 'evt', 'E']
-_DEFAULT_EMAX_LEVELS   = [0, 1, 3]   # __ntuple, entry, file_idx (skips rec.mc.nu..index)
 _DEFAULT_INT_MATCH_COL = ['__ntuple', 'entry', 'file_idx']
 _HDF_KW            = dict(format='fixed')
+
+
+def _ensure_file_idx(df: pd.DataFrame, default: int = 0) -> pd.DataFrame:
+    """Append file_idx=default as an index level if not already present."""
+    if 'file_idx' not in df.index.names:
+        df = df.copy()
+        df['file_idx'] = default
+        df = df.set_index('file_idx', append=True)
+    return df
 
 DetVarFile = namedtuple('DetVarFile', ['lite_df', 'slc_df'])
 """Named tuple returned by prepare_detvar_df.
@@ -80,7 +89,6 @@ def prepare_detvar_df(
     file: str,
     ext_match_col: list | None = None,
     e_col: str = 'E',
-    emax_levels: list | None = None,
     nulite_key: str = 'nulite',
     slc_key: str = 'nuecc',
 ) -> DetVarFile:
@@ -91,6 +99,9 @@ def prepare_detvar_df(
     raw nuecc table. The intersection and internal filtering happen later in
     :func:`write_detvar_store`.
 
+    If ``file_idx`` is absent from either DataFrame's index it is added with
+    a default value of 0.
+
     Parameters
     ----------
     file : str
@@ -100,9 +111,6 @@ def prepare_detvar_df(
         Defaults to ``['run', 'subrun', 'evt', 'E']``.
     e_col : str, optional
         Top-level column name for neutrino energy (default ``'E'``).
-    emax_levels : list of int, optional
-        Index levels that define a unique event for the per-event E_max filter
-        (default ``[0, 1, 3]``, i.e. ``__ntuple``, ``entry``, ``file_idx``).
     nulite_key : str, optional
         Table key for the light neutrino table (default ``'nulite'``).
     slc_key : str, optional
@@ -117,17 +125,18 @@ def prepare_detvar_df(
     """
     if ext_match_col is None:
         ext_match_col = _DEFAULT_EXT_MATCH_COL
-    if emax_levels is None:
-        emax_levels = _DEFAULT_EMAX_LEVELS
 
     dfs = load_dfs(file, [nulite_key, slc_key])
 
-    lite_df = dfs[nulite_key]
-    e_max_per_event = lite_df.groupby(level=emax_levels)[e_col].transform('max')
+    lite_df = _ensure_file_idx(dfs[nulite_key])
+    slc_df  = _ensure_file_idx(dfs[slc_key])
+
+    emax_names = [n for n in lite_df.index.names if n in _DEFAULT_INT_MATCH_COL]
+    e_max_per_event = lite_df.groupby(level=emax_names)[e_col].transform('max')
     lite_df = lite_df[lite_df[e_col] == e_max_per_event]
     lite_df = lite_df.reset_index().set_index(ext_match_col)
 
-    return DetVarFile(lite_df=lite_df, slc_df=dfs[slc_key])
+    return DetVarFile(lite_df=lite_df, slc_df=slc_df)
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +177,7 @@ def write_detvar_store(
     cv_dict: dict,
     dv_dict: dict,
     cv_map: dict,
+    mode: str = 'w',
 ) -> None:
     """Write a DetVar HDF5 store.
 
@@ -185,7 +195,7 @@ def write_detvar_store(
     Parameters
     ----------
     outfile : str
-        Output HDF5 file path (will be created or overwritten).
+        Output HDF5 file path.
     cv_dict : dict[str, DetVarFile]
         CV files keyed by an arbitrary name.
         Each value must be a :class:`DetVarFile` from :func:`prepare_detvar_df`.
@@ -194,6 +204,14 @@ def write_detvar_store(
         unisim variations or a list for multisim groups.
     cv_map : dict[str, str]
         Maps each group name in ``dv_dict`` to a key in ``cv_dict``.
+    mode : {'w', 'a'}, default 'w'
+        ``'w'`` creates or fully overwrites the store.
+        ``'a'`` patches only the groups in ``dv_dict`` into an existing store,
+        leaving all other groups untouched.  Falls back to ``'w'`` if the file
+        does not exist yet.  Raises ``ValueError`` if a CV being rewritten is
+        also depended on by groups that are *not* in ``dv_dict`` (those groups'
+        iloc indices would become invalid); include all affected groups in the
+        call to avoid this.
 
     Notes
     -----
@@ -204,12 +222,51 @@ def write_detvar_store(
     """
     _validate_inputs(cv_dict, dv_dict, cv_map)
 
+    if mode == 'a' and not os.path.exists(outfile):
+        print(f"  (store not found; writing fresh)")
+        mode = 'w'
+
     kw = _HDF_KW
 
     meta_rows    = []
     written_cvs: set[str] = set()
+    preserved_meta: pd.DataFrame | None = None
 
-    with warnings.catch_warnings(), pd.HDFStore(outfile, mode='w') as store:
+    if mode == 'a':
+        with pd.HDFStore(outfile, mode='r') as _store:
+            existing_meta = _store['meta'] if 'meta' in _store else pd.DataFrame(
+                columns=['cv_key', 'n_dv', 'pot'], dtype=object
+            )
+            existing_meta.index.name = 'group'
+
+            # Safety: if a CV is being overwritten, all groups using it must be in dv_dict
+            cvs_to_write = {cv_map[g] for g in dv_dict}
+            for cv_key in cvs_to_write:
+                if f'cv/{cv_key}' in _store:
+                    dependent = existing_meta[existing_meta['cv_key'] == cv_key].index.tolist()
+                    stale = set(dependent) - set(dv_dict)
+                    if stale:
+                        raise ValueError(
+                            f"CV '{cv_key}' must be rewritten but groups {sorted(stale)} in "
+                            f"the existing store also depend on it — their iloc indices would "
+                            f"become invalid.  Add them to --groups to keep the store consistent."
+                        )
+
+        preserved_meta = existing_meta[~existing_meta.index.isin(dv_dict)]
+
+        # Remove stale keys for groups about to be overwritten
+        with pd.HDFStore(outfile, mode='a') as _store:
+            for group in dv_dict:
+                for key in [f'cv_iloc/{group}', f'dv/{group}/v0', f'dv/{group}/v1']:
+                    if key in _store:
+                        _store.remove(key)
+            for cv_key in cvs_to_write:
+                if f'cv/{cv_key}' in _store:
+                    _store.remove(f'cv/{cv_key}')
+            if 'meta' in _store:
+                _store.remove('meta')
+
+    with warnings.catch_warnings(), pd.HDFStore(outfile, mode=mode) as store:
         warnings.filterwarnings('ignore', '.*not a valid Python identifier.*')
         warnings.filterwarnings('ignore', category=pd.errors.PerformanceWarning)
         for group, dv_entry in dv_dict.items():
@@ -276,6 +333,8 @@ def write_detvar_store(
             })
 
         meta = pd.DataFrame(meta_rows).set_index('group')
+        if preserved_meta is not None:
+            meta = pd.concat([preserved_meta, meta])
         store.put('meta', meta, **kw)
 
     print(f"Wrote {outfile}")
@@ -288,8 +347,14 @@ def write_detvar_store(
 def load_detvar_dict(
     h5file: str,
     groups: list | None = None,
+    preprocess_fn=None,
 ) -> dict:
     """Load a DetVar HDF5 store into a dict compatible with get_detvar_systs.
+
+    Each loaded DataFrame is preprocessed with *preprocess_fn* before being
+    returned. This mirrors the preprocessing applied to the main MC DataFrames
+    (flash PE scaling, phi angles, etc.) so that selection cuts behave
+    identically for DV/CV and nominal MC.
 
     Parameters
     ----------
@@ -297,12 +362,22 @@ def load_detvar_dict(
         Path to an HDF5 file written by :func:`write_detvar_store`.
     groups : list of str, optional
         Subset of group names to load. If None, all groups are loaded.
+    preprocess_fn : callable or None, optional
+        Function applied to each loaded DataFrame before it is stored in the
+        output dict.  Signature: ``fn(df) -> df``.  Defaults to ``None``
+        (no preprocessing), since stores written by :func:`process_detvars`
+        are already preprocessed at write time.  Pass an explicit callable
+        to apply additional transforms on load.
 
     Returns
     -------
     dict
         Maps each group name to ``{'dv_df': df_or_list, 'cv_df': df, 'pot': float}``.
     """
+    _preprocess_label = None
+    if preprocess_fn is not None:
+        _preprocess_label = getattr(preprocess_fn, '__name__', repr(preprocess_fn))
+
     meta = pd.read_hdf(h5file, 'meta')
 
     if groups is not None:
@@ -320,20 +395,51 @@ def load_detvar_dict(
         for group, row in meta.iterrows():
             cv_key = row['cv_key']
             if cv_key not in cv_cache:
-                cv_cache[cv_key] = store[f'cv/{cv_key}']
+                cv_df = store[f'cv/{cv_key}']
+                cv_cache[cv_key] = preprocess_fn(cv_df) if preprocess_fn is not None else cv_df
             cv_full = cv_cache[cv_key]
 
-            cv_iloc   = store[f'cv_iloc/{group}'].values
+            cv_iloc    = store[f'cv_iloc/{group}'].values
             cv_matched = cv_full.iloc[cv_iloc]
 
-            n_dv  = int(row['n_dv'])
-            dv_dfs = [store[f'dv/{group}/v{i}'] for i in range(n_dv)]
+            n_dv   = int(row['n_dv'])
+            dv_dfs = [
+                preprocess_fn(store[f'dv/{group}/v{i}']) if preprocess_fn is not None
+                else store[f'dv/{group}/v{i}']
+                for i in range(n_dv)
+            ]
 
             out[group] = {
                 'dv_df': dv_dfs if n_dv > 1 else dv_dfs[0],
                 'cv_df': cv_matched,
                 'pot':   float(row['pot']),
             }
+
+    preprocess_str = _preprocess_label if _preprocess_label is not None else "none"
+    print(f"Loaded {len(out)} detvar group(s) from {h5file}  [preprocess: {preprocess_str}]")
+    print(f"  Keys: {list(out.keys())}")
+
+    _col_warnings = []
+    for group, entry in out.items():
+        cv_cols  = set(entry['cv_df'].columns.tolist())
+        dv_list  = entry['dv_df'] if isinstance(entry['dv_df'], list) else [entry['dv_df']]
+        for i, dv in enumerate(dv_list):
+            dv_cols  = set(dv.columns.tolist())
+            only_cv  = cv_cols - dv_cols
+            only_dv  = dv_cols - cv_cols
+            if only_cv or only_dv:
+                suffix = f"[v{i}]" if len(dv_list) > 1 else ""
+                if only_cv:
+                    _col_warnings.append(f"  {group}{suffix}: columns only in CV:  {sorted(only_cv)}")
+                if only_dv:
+                    _col_warnings.append(f"  {group}{suffix}: columns only in DV:  {sorted(only_dv)}")
+
+    if _col_warnings:
+        print("  Column inconsistencies found:")
+        for w in _col_warnings:
+            print(w)
+    else:
+        print("  Column check: OK (all DV/CV column sets match)")
 
     return out
 
