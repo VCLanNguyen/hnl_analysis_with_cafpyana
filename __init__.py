@@ -10,6 +10,7 @@ from . import histogram
 from . import plotting
 from . import syst
 from . import selection
+from . import analysis
 from . import classes
 from . import variables
 from . import funcs
@@ -25,6 +26,7 @@ from .histogram import *
 from .plotting import *
 from .syst import *
 from .selection import *
+from .analysis import *
 from .classes import *
 from .variables import *
 from .funcs import *

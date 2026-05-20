@@ -34,11 +34,11 @@ __all__ = [
     'plot_syst_breakdown',
 ]
 
-from .constants import (signal_dict, signal_categories,
-                        generic_dict, generic_categories,
-                        pdg_categories,
-                        mode_dict, mode_categories,
-                        integrated_flux)
+from .analysis import (signal_dict, signal_categories,
+                       generic_dict, generic_categories,
+                       pdg_categories,
+                       mode_dict, mode_categories,
+                       integrated_flux)
 from .utils import ensure_lexsorted
 from .syst import get_syst
 from .histogram import get_hist1d

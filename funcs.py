@@ -4,12 +4,13 @@ from dataclasses import replace
 
 from .utils import ensure_lexsorted, apply_event_mask
 from .io import load_dfs
-from .selection import select, select_sideband
+from .selection import select
+from .analysis import select_sideband
 from .histogram import get_hist1d
 from .syst import calc_matrices, get_syst, get_syst_df, get_detvar_systs
 from .detvar_store import load_detvar_dict
 from .classes import SystematicsOutput, XSecInputs
-from .constants import integrated_flux, signal_dict, POT_NORM_UNC, NTARGETS_UNC
+from .analysis import integrated_flux, signal_dict, POT_NORM_UNC, NTARGETS_UNC
 from .preprocess import preprocess_mc, add_pi0
 from . import config
 

@@ -43,6 +43,7 @@ __all__ = [
     'fix_flash_pe_scale',
     'fix_flash_time',
     'add_phi',
+    'fix_prim_shw_energy',
     'fix_sec_shw_energy',
     'add_pi0',
 ]
@@ -155,8 +156,9 @@ def preprocess_mc(df: pd.DataFrame, *, flash_pe_scale: float = 0.66) -> pd.DataF
     Applies:
 
     1. :func:`fix_flash_pe_scale`  — flash PE calibration correction
-    2. :func:`fix_sec_shw_energy`  — secondary shower energy from maxplane_energy
-    3. :func:`add_phi`             — shower and track azimuthal angles
+    2. :func:`fix_prim_shw_energy` — primary shower reco_energy from maxplane_energy
+    3. :func:`fix_sec_shw_energy`  — secondary shower energy from maxplane_energy
+    4. :func:`add_phi`             — shower and track azimuthal angles
 
     All fixes are idempotent; calling this on an already-preprocessed
     DataFrame is safe (each already-applied fix warns and skips).
@@ -169,6 +171,7 @@ def preprocess_mc(df: pd.DataFrame, *, flash_pe_scale: float = 0.66) -> pd.DataF
         Scale factor forwarded to :func:`fix_flash_pe_scale` (default 0.66).
     """
     df = fix_flash_pe_scale(df, scale=flash_pe_scale)
+    df = fix_prim_shw_energy(df)
     df = fix_sec_shw_energy(df)
     df = add_phi(df)
     return df
@@ -179,9 +182,10 @@ def preprocess_data(df: pd.DataFrame, *, flash_time_offset: float = 0.19) -> pd.
 
     Applies:
 
-    1. :func:`fix_flash_time`     — flash time frame-offset correction
-    2. :func:`fix_sec_shw_energy` — secondary shower energy from maxplane_energy
-    3. :func:`add_phi`            — shower and track azimuthal angles
+    1. :func:`fix_flash_time`      — flash time frame-offset correction
+    2. :func:`fix_prim_shw_energy` — primary shower reco_energy from maxplane_energy
+    3. :func:`fix_sec_shw_energy`  — secondary shower energy from maxplane_energy
+    4. :func:`add_phi`             — shower and track azimuthal angles
 
     All fixes are idempotent; calling this on an already-preprocessed
     DataFrame is safe (each already-applied fix warns and skips).
@@ -194,6 +198,7 @@ def preprocess_data(df: pd.DataFrame, *, flash_time_offset: float = 0.19) -> pd.
         Timing offset in µs forwarded to :func:`fix_flash_time` (default 0.19).
     """
     df = fix_flash_time(df, offset=flash_time_offset)
+    df = fix_prim_shw_energy(df)
     df = fix_sec_shw_energy(df)
     df = add_phi(df)
     return df
@@ -230,8 +235,38 @@ def add_phi(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Pi0 fixes (opt-in — call after preprocess_mc / preprocess_data)
+# Shower energy fixes
 # ---------------------------------------------------------------------------
+
+def fix_prim_shw_energy(df: pd.DataFrame, scale: float = 1.17) -> pd.DataFrame:
+    """Set primary shower reco_energy from maxplane_energy * scale.
+
+    If ``primshw.shw.reco_energy`` already exists, checks that its ratio to
+    ``maxplane_energy`` matches *scale* and warns if not.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame containing ``primshw.shw.maxplane_energy``.
+    scale : float
+        Energy scale factor (default 1.17).
+    """
+    name = 'prim_shw_energy'
+    if _skip_if_applied(df, name):
+        return df
+    col = ('primshw', 'shw', 'reco_energy', '', '', '')
+    if col in df.columns:
+        ratio = (df[col] / df.primshw.shw.maxplane_energy).dropna()
+        if not np.allclose(ratio, scale, rtol=0.01):
+            warnings.warn(
+                f"primshw.shw.reco_energy already exists but ratio to maxplane_energy "
+                f"differs from {scale} (mean ratio: {ratio.mean():.3f}). "
+                "Overwriting with maxplane_energy * scale.",
+                stacklevel=2,
+            )
+    df[col] = df.primshw.shw.maxplane_energy * scale
+    return _mark_applied(df, name)
+
 
 def fix_sec_shw_energy(df: pd.DataFrame, scale: float = 1.17) -> pd.DataFrame:
     """Set secondary shower reco_energy from maxplane_energy * scale.

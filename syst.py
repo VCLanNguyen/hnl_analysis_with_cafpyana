@@ -28,9 +28,9 @@ __all__ = [
 ]
 from .utils import ensure_lexsorted, apply_event_mask
 from .histogram import get_hist1d, get_hist2d
-from .selection import select, define_signal
+from .selection import select
+from .analysis import define_signal, integrated_flux
 from .classes import XSecInputs
-from .constants import integrated_flux
 from makedf.geniesyst import regen_systematics, ar23p_genie_systematics
     
 def is_xsec(col: tuple, xsec_inputs: XSecInputs | None) -> bool:
