@@ -82,6 +82,7 @@ directly to `select()` without touching the source, or modify the sequences in p
 
 ```python
 import nueana as nue
+from nueana.selection import DEFAULT_CUTS, modify_cut, drop_cuts, CutSpec
 
 # Override individual cut thresholds
 cuts = nue.modify_cut(nue.DEFAULT_CUTS, "dedx", min=1.5, max=3.0)
@@ -101,7 +102,7 @@ cuts = nue.DEFAULT_CUTS + [my_cut]
 stages = nue.select(df, savedict=True)
 
 # Or stop at a specific stage
-df_presel = nue.select(df, stage="preselection")
+df_preflash = nue.select(df, stage="flash_pe")
 ```
 
 ### 4. Define your analysis variables — `analysis.py`
