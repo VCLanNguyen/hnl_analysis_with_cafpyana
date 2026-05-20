@@ -24,8 +24,8 @@ secshw) are modified; columns that are absent or fully-NaN are left untouched.
 
 Usage
 -----
-    from nueana.detvar_store  import prepare_detvar_df, write_detvar_store
-    from nueana.detvar_recomb import make_recomb_detvars
+    from nueana.detvar.store  import prepare_detvar_df, write_detvar_store
+    from nueana.detvar.recomb import make_recomb_detvars
 
     cv = prepare_detvar_df('detvar_cv.df')
     dv_dfs = make_recomb_detvars(cv.slc_df)

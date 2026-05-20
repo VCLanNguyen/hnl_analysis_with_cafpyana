@@ -42,7 +42,7 @@ import uproot
 from functools import partial
 
 from . import config
-from .classes import CutSpec
+from .classes import CutSpec, VariableConfig
 from .selection import modify_cut, drop_cuts, select
 from .utils import ensure_lexsorted
 from makedf.util import *
@@ -50,6 +50,8 @@ from pyanalib.pandas_helpers import *
 
 
 __all__ = [
+    # physical constants
+    'RHO', 'N_A', 'M_AR', 'V_SBND', 'NTARGETS',
     # categories
     'signal_categories', 'signal_dict',
     'generic_categories', 'generic_dict',
@@ -62,10 +64,24 @@ __all__ = [
     # cut helpers
     'cut_muon_rejection', 'InSpill', 'InScore',
     # cut sequences
-    'DEFAULT_CUTS', 'SIDEBAND_CUTS', 'select_sideband',
+    'DEFAULT_CUTS', 'SIDEBAND_CUTS',
     # truth categorisation
     'define_signal', 'define_generic',
+    # analysis variables
+    'electron_energy', 'electron_direction',
 ]
+
+
+# ---------------------------------------------------------------------------
+# Physical and detector constants
+# ---------------------------------------------------------------------------
+
+RHO = 1.3836        # g/cm3, liquid Ar density
+N_A = 6.02214076e23 # Avogadro's number
+M_AR = 40           # g, molar mass of argon
+# x cm (drift) * z cm (width) * y cm (height), excluding 90 cm of y-dimension at high z
+V_SBND = (190)*2 * ((250 - 10)*(190*2) + (450-250)*(100 + 190))
+NTARGETS = RHO * V_SBND * N_A / M_AR
 
 
 # ---------------------------------------------------------------------------
@@ -215,15 +231,6 @@ SIDEBAND_CUTS = modify_cut(SIDEBAND_CUTS, "opening_angle",  min=0,   max=1.0,   
 
 
 # ---------------------------------------------------------------------------
-# Convenience wrapper
-# ---------------------------------------------------------------------------
-
-def select_sideband(indf, cuts=None, **kwargs):
-    """Apply the sideband cut sequence. Accepts the same kwargs as ``select``."""
-    return select(indf, cuts=SIDEBAND_CUTS if cuts is None else cuts, **kwargs)
-
-
-# ---------------------------------------------------------------------------
 # Truth categorisation
 # ---------------------------------------------------------------------------
 
@@ -315,3 +322,35 @@ def define_generic(indf: pd.DataFrame, prefix=None):
         print("Warning: unidentified signal/background channels present.")
     indf["signal"] = nudf["signal"]
     return indf
+
+
+# ---------------------------------------------------------------------------
+# Analysis variables
+# ---------------------------------------------------------------------------
+
+def electron_energy() -> VariableConfig:
+    """VariableConfig for primary electron energy (GeV)."""
+    return VariableConfig(
+        var_save_name="energy",
+        var_plot_name="$E_{e-}$",
+        var_unit="GeV",
+        bins=np.array([0.5, 0.7, 0.95, 1.25, 1.7, 2.5]),
+        bin_labels=np.array([0.5, 0.7, 0.95, 1.25, 1.7, 5]),
+        var_evt_reco_col=('primshw', 'shw', 'reco_energy'),
+        var_evt_truth_col=('slc', 'truth', 'e', 'genE'),
+        var_nu_col=('e', 'genE'),
+    )
+
+
+def electron_direction() -> VariableConfig:
+    """VariableConfig for primary electron direction (cos theta)."""
+    return VariableConfig(
+        var_save_name="direction",
+        var_plot_name="$\\cos\\theta_{e-}$",
+        var_unit="",
+        bins=np.array([0.5, 0.6, 0.75, 0.85, 0.925, 1.0]),
+        bin_labels=np.array([-1.0, 0.6, 0.75, 0.85, 0.925, 1.0]),
+        var_evt_reco_col=('primshw', 'shw', 'dir', 'z'),
+        var_evt_truth_col=('slc', 'truth', 'e', 'dir', 'z'),
+        var_nu_col=('e', 'dir', 'z'),
+    )

@@ -50,7 +50,7 @@ import warnings
 import numpy as np
 import pandas as pd
 from collections import namedtuple
-from .io import load_dfs
+from ..io import load_dfs
 
 __all__ = ['DetVarFile', 'prepare_detvar_df', 'write_detvar_store', 'load_detvar_dict', 'detvar_store_info', 'apply_selection']
 
@@ -462,7 +462,6 @@ def detvar_store_info(h5file: str) -> pd.DataFrame:
         Index: group name. Columns: cv_key, n_dv, pot.
     """
     return pd.read_hdf(h5file, 'meta')
-
 
 
 def apply_selection(d: dict, fn, **kwargs) -> dict:

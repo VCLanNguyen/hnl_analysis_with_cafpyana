@@ -3,22 +3,20 @@
 :class:`~nueana.classes.CutSpec` (defined in :mod:`nueana.classes`) and the
 functions to build, modify, and apply cut sequences live here.
 
-The analysis-specific cut sequences (:data:`~nueana.cuts.DEFAULT_CUTS`,
-:data:`~nueana.cuts.SIDEBAND_CUTS`) and signal categorisation live in
-:mod:`nueana.cuts`.
+The analysis-specific cut sequences (:data:`~nueana.analysis.DEFAULT_CUTS`,
+:data:`~nueana.analysis.SIDEBAND_CUTS`) and signal categorisation live in
+:mod:`nueana.analysis`.
 
 **Tighten or loosen a cut**::
 
-    from nueana.selection import modify_cut, select
-    from nueana.cuts import DEFAULT_CUTS
+    from nueana import modify_cut, select, DEFAULT_CUTS
 
     cuts = modify_cut(DEFAULT_CUTS, "dedx", min=1.5, max=3.0)
     df_sel = select(df, cuts=cuts)
 
 **Drop a cut**::
 
-    from nueana.cuts import DEFAULT_CUTS
-    from nueana.selection import drop_cuts
+    from nueana import DEFAULT_CUTS, drop_cuts
 
     cuts = drop_cuts(DEFAULT_CUTS, "muon_rejection")
     cuts = drop_cuts(DEFAULT_CUTS, "direction", "shower_length")
@@ -43,7 +41,7 @@ from functools import reduce
 from .classes import CutSpec
 
 
-__all__ = ['drop_cuts', 'modify_cut', 'select']
+__all__ = ['drop_cuts', 'modify_cut', 'select', 'select_sideband']
 
 
 # ---------------------------------------------------------------------------
@@ -179,4 +177,11 @@ def select(indf,
         if stage == spec.name:
             return df_dict if savedict else df
 
+
+def select_sideband(indf, cuts=None, **kwargs):
+    """Apply the sideband cut sequence. Accepts the same kwargs as ``select``."""
+    if cuts is None:
+        from .analysis import SIDEBAND_CUTS
+        cuts = SIDEBAND_CUTS
+    return select(indf, cuts=cuts, **kwargs)
     return df_dict if savedict else df
