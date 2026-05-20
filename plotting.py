@@ -868,7 +868,7 @@ def plot_syst_category_breakdown(angle_syst_df: pd.DataFrame,
     axes[1].set_xticks(angle_bins)
     if angle_bin_labels is not None:
         axes[1].set_xticklabels(angle_bin_labels)
-    axes[1].legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    axes[1].legend(bbox_to_anchor=(1.05, 1), loc='upper left',title="Uncertainty Sources (Normalization %)")
     for ax in axes:
         ax.annotate(text=region_label, xy=(0.02, 0.925), xycoords='axes fraction', fontsize=11, fontweight='bold', alpha=0.5)
 
