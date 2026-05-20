@@ -152,7 +152,7 @@ def load_mc(
         del chunk
         gc.collect()
 
-    return pd.concat(chunks, ignore_index=False), pot, ngen
+    return pd.concat(chunks, ignore_index=False).copy(), pot, ngen
 
 
 def load_data(
