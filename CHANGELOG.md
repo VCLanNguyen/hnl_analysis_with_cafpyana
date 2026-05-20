@@ -5,6 +5,52 @@ top each time changes are merged that other users should know about.
 
 ---
 
+## 2026-05-20 — Package reorganization; `detvar/` subpackage; `syst_vars` plot API
+
+### Breaking changes
+
+**`plot_syst_category_breakdown` / `plot_syst_breakdown` — `syst_vars` tuple API**
+
+The named per-variable arguments (`angle_syst_df`, `energy_syst_df`, `angle_var`,
+`energy_var`) are replaced by a single `syst_vars` list. Each entry is a 3- or 4-tuple
+of `(SystematicsOutput, bins, xlabel[, bin_labels])`. This generalises the functions to
+any number of variables.
+
+---
+
+### Structural changes (import-transparent)
+
+The following reorganization is fully backward-compatible — all public symbols remain
+accessible via `import nueana as nue`.
+
+**`analysis.py` is now the single file to edit for a new analysis**
+Physical constants, flux values, signal categories, cut sequences, truth-labeling
+functions, and analysis variable factories (`electron_energy`, `electron_direction`)
+are all consolidated here. Files `constants.py`, `variables.py`, `histogram.py`, and
+`geometry.py` have been removed; their contents are re-exported from their new homes
+(`analysis.py` and `utils.py`).
+
+**`detvar/` subpackage**
+`detvar_store.py` and `detvar_recomb.py` have moved to `nueana/detvar/store.py` and
+`nueana/detvar/recomb.py`. `scripts/process_detvars.py` has moved to
+`nueana/detvar/process_detvars.py`. See [`detvar/README.md`](detvar/README.md) for
+usage.
+
+**`select_sideband` moved to `selection.py`**
+Was in `analysis.py`; now lives in `selection.py` alongside the rest of the selection
+pipeline. Re-exported from the top-level package as before.
+
+---
+
+### New additions
+
+**`nueana/examples/signal_plots.ipynb`**
+Reference notebook demonstrating the full signal-region workflow: loading MC and data,
+building `SystematicsInput` / `PlottingConfig`, making stacked plots, and producing
+systematics breakdown figures.
+
+---
+
 ## 2026-05-20 — High-level loaders, detvar append mode, plotting updates
 
 ### Bug fixes

@@ -1,10 +1,57 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Callable, Literal, Optional
 
 import numpy as np
 import pandas as pd
+
+
+@dataclass
+class CutSpec:
+    """Declarative description of a single selection cut.
+
+    Exactly one of ``variable``, ``accessor``, or ``fn`` must be set.
+
+    Parameters
+    ----------
+    name : str
+        Unique identifier used for stage stopping and savedict keys.
+    variable : tuple, optional
+        MultiIndex key resolved via getattr chaining, e.g.
+        ``("primshw", "shw", "len")``. Cut passes when
+        ``min < df.<variable> < max``.
+    min, max : float
+        Lower and upper bounds for variable/accessor cuts.
+        Default to ``-inf`` / ``+inf`` (i.e. open-ended).
+    accessor : callable, optional
+        ``lambda df: <Series>`` — use when column access is more
+        complex than a simple tuple key. Cut passes when
+        ``min < accessor(df) < max``.
+    fn : callable, optional
+        ``fn(df) -> bool mask`` — full override for cuts that are not
+        a simple min/max comparison. Takes precedence over
+        ``variable`` and ``accessor``.
+    label : str, optional
+        Human-readable description, e.g. for cut-flow tables and plots.
+        Defaults to ``name`` if not set.
+    """
+    name: str
+    variable: tuple = None
+    min: float = -np.inf
+    max: float = np.inf
+    accessor: Callable = None
+    fn: Callable = None
+    label: str = None
+
+    def __post_init__(self):
+        if self.fn is None and self.accessor is None and self.variable is None:
+            raise ValueError(
+                f"CutSpec '{self.name}': at least one of variable, accessor, or fn must be set."
+            )
+        if self.label is None:
+            self.label = self.name
+
 
 class VariableConfig:
     """Configurable container for an unfolding variable.
@@ -148,6 +195,7 @@ class PlottingConfig:
 
 
 __all__ = [
+    'CutSpec',
     'VariableConfig',
     'XSecInputs',
     'SystematicsOutput',

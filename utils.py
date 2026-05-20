@@ -1,8 +1,11 @@
-"""Generic DataFrame utilities."""
+"""Generic DataFrame and histogram utilities."""
+import numpy as np
 import pandas as pd
 from pyanalib.pandas_helpers import *
 
 from . import config
+
+__all__ = ['ensure_lexsorted', 'merge_hdr', 'apply_event_mask', 'get_hist1d', 'get_hist2d']
 
 def ensure_lexsorted(frame, axis):
     """Ensure DataFrame axes are fully lexsorted when using MultiIndex.
@@ -101,3 +104,86 @@ def apply_event_mask(df: pd.DataFrame, event_mask: str | None = None) -> pd.Data
     if event_mask == "background":
         return df[df.signal != 0]
     return df
+
+
+# ---------------------------------------------------------------------------
+# Histogram utilities
+# ---------------------------------------------------------------------------
+
+def get_hist1d(weights=None, data=None, bins=None, overflow=True, **kwargs):
+    """1D histogram with optional overflow handling.
+
+    Parameters
+    ----------
+    weights : np.ndarray, optional
+        Per-event weights. If None, uses uniform weights of 1.0 for all events.
+    data : np.ndarray
+        Data values to histogram.
+    bins : np.ndarray
+        Bin edges.
+    overflow : bool, optional
+        If True (default), values above bins[-1] are clipped into the last bin.
+        Non-finite values are assigned to edge bins. If False, standard numpy
+        behavior with no clipping.
+    **kwargs
+        Passed to np.histogram().
+
+    Returns
+    -------
+    np.ndarray
+        Histogram counts of shape (len(bins)-1,).
+    """
+    if weights is None:
+        weights = np.ones(len(data))
+    if overflow:
+        cleaned = np.nan_to_num(data, nan=bins[-1] - 1e-10,
+                                posinf=bins[-1] - 1e-10,
+                                neginf=bins[0])
+        clipped = np.clip(cleaned, bins[0], bins[-1] - 1e-10)
+        return np.histogram(clipped, bins=bins, weights=weights, **kwargs)[0]
+    else:
+        return np.histogram(data, bins=bins, weights=weights, **kwargs)[0]
+
+
+def get_hist2d(weights=None, x=None, y=None, bins=None, overflow=True, **kwargs):
+    """2D histogram with optional overflow handling on both axes.
+
+    Parameters
+    ----------
+    weights : np.ndarray, optional
+        Per-event weights. If None, uses uniform weights of 1.0 for all events.
+    x : np.ndarray
+        X-axis data values.
+    y : np.ndarray
+        Y-axis data values.
+    bins : np.ndarray or list of two np.ndarray
+        Bin edges. Pass a 2-element list ``[x_bins, y_bins]`` for different axes.
+    overflow : bool, optional
+        If True (default), values outside the bin range are clipped into edge
+        bins on both axes. If False, standard numpy behavior.
+    **kwargs
+        Passed to np.histogram2d().
+
+    Returns
+    -------
+    np.ndarray
+        2D histogram counts of shape (len(x_bins)-1, len(y_bins)-1).
+    """
+    if isinstance(bins, (list, tuple)) and len(bins) == 2 and not np.isscalar(bins[0]) and not np.isscalar(bins[1]):
+        x_bins, y_bins = bins
+    else:
+        x_bins = y_bins = bins
+    if weights is None:
+        weights = np.ones(len(x))
+    if overflow:
+        cx = np.nan_to_num(x, nan=x_bins[-1] - 1e-10,
+                           posinf=x_bins[-1] - 1e-10,
+                           neginf=x_bins[0])
+        cy = np.nan_to_num(y, nan=y_bins[-1] - 1e-10,
+                           posinf=y_bins[-1] - 1e-10,
+                           neginf=y_bins[0])
+        cx = np.clip(cx, x_bins[0], x_bins[-1] - 1e-10)
+        cy = np.clip(cy, y_bins[0], y_bins[-1] - 1e-10)
+        return np.histogram2d(cx, cy, bins=[x_bins, y_bins], weights=weights, **kwargs)[0]
+    else:
+        return np.histogram2d(x, y, bins=[x_bins, y_bins], weights=weights, **kwargs)[0]

@@ -34,15 +34,15 @@ __all__ = [
     'plot_syst_breakdown',
 ]
 
-from .constants import (signal_dict, signal_categories,
-                        generic_dict, generic_categories,
-                        pdg_categories,
-                        mode_dict, mode_categories,
-                        integrated_flux)
+from .analysis import (signal_dict, signal_categories,
+                       generic_dict, generic_categories,
+                       pdg_categories,
+                       mode_dict, mode_categories,
+                       integrated_flux)
 from .utils import ensure_lexsorted
 from .syst import get_syst
-from .histogram import get_hist1d
-from .classes import PlottingConfig, VariableConfig, SystematicsInput
+from .utils import get_hist1d
+from .classes import PlottingConfig, VariableConfig, SystematicsInput, SystematicsOutput
 
 def annotate_internal(ax):
     """Stamp 'SBND Internal' in the upper-left and the tune label in the upper-right of *ax*."""
@@ -304,19 +304,7 @@ def plot_var(df: pd.DataFrame,
     elif isinstance(systs, SystematicsInput) or type(systs).__name__ == 'SystematicsInput':
         # Case 4: call get_total_cov on-the-fly with the bundled parameters.
         from .funcs import get_total_cov
-        _output = get_total_cov(
-            reco_df=df, reco_var=var, bins=bins,
-            mcbnb_pot=systs.mcbnb_pot,
-            cuts=systs.cuts,
-            projected_pot=systs.projected_pot,
-            mcbnb_ngen=systs.mcbnb_ngen,
-            intime_threshold=systs.intime_threshold,
-            event_type=systs.event_type,
-            select_region=systs.select_region,
-            uncertainty_keys=systs.uncertainty_keys,
-            xsec_inputs=systs.xsec_inputs,
-            detvar_dict=systs.detvar_dict,
-        )
+        _output = get_total_cov(reco_df=df, reco_var=var, bins=bins, **systs.to_kwargs())
         total_cov = np.array(_output.rate_cov, dtype=float, copy=True)
         # get_total_cov returns the covariance on the flux-normalized rates
         # want to obtain the covariance on the MC histogram counts before scaling by POT and flux
@@ -716,7 +704,7 @@ def plot_detvar(
     ----------
     detvar_dict : dict
         Detector variation dictionary as returned by
-        :func:`~nueana.detvar_store.load_detvar_dict`.
+        :func:`~nueana.detvar.store.load_detvar_dict`.
     key : str
         Group name to plot (a key in ``detvar_dict``).
     var : str or tuple
@@ -796,156 +784,160 @@ def _combine_syst_uncertainties(syst_df: pd.DataFrame) -> np.ndarray:
     return np.sqrt(np.sum(np.square(unc_values), axis=0))
 
 
-def plot_syst_category_breakdown(angle_syst_df: pd.DataFrame,
-                                 energy_syst_df: pd.DataFrame,
-                                 category_dict: dict,
-                                 angle_var: VariableConfig | None = None,
-                                 energy_var: VariableConfig | None = None,
-                                 region_label: str = "Signal Region",
-                                 figsize: tuple[int, int] = (10, 4)) -> tuple[plt.Figure, np.ndarray, pd.Series, pd.Series]:
-    """Plot the category-level systematics summary for angle and energy bins."""
-    if angle_var is not None:
-        angle_bins = angle_var.bins
-        angle_bin_labels = list(angle_var.bin_labels) if angle_var.bin_labels is not None else None
-    if energy_var is not None:
-        energy_bins = energy_var.bins
-        energy_bin_labels = list(energy_var.bin_labels) if energy_var.bin_labels is not None else None
-    if angle_var is None or energy_var is None:
-        raise ValueError("angle_var and energy_var must be provided")
+def plot_syst_category_breakdown(
+    syst_vars: list[tuple],
+    category_dict: dict,
+    region_label: str = "Signal Region",
+    figsize: tuple[int, int] | None = None,
+) -> tuple[plt.Figure, np.ndarray, list, list]:
+    """Plot the category-level systematics summary for any number of variables.
 
-    fig, axes = plt.subplots(1, 2, figsize=figsize)
+    Parameters
+    ----------
+    syst_vars : list of tuple
+        One entry per variable, each a 3- or 4-tuple:
+        ``(SystematicsOutput, bins, xlabel)`` or
+        ``(SystematicsOutput, bins, xlabel, bin_labels)``.
+    category_dict : dict
+        Mapping of category name → style dict (``color``, ``label``, ``line``).
+    region_label : str, default "Signal Region"
+        Text stamped in the corner of each subplot.
+    figsize : tuple, optional
+        Figure size. Defaults to ``(5 * n_vars, 4)``.
+
+    Returns
+    -------
+    fig, axes, cats_per_var, cat_sums_per_var
+        ``cats_per_var`` and ``cat_sums_per_var`` are lists (one per variable)
+        of grouped uncertainty arrays and normalisation sums.
+    """
+    n = len(syst_vars)
+    if figsize is None:
+        figsize = (5 * n, 4)
+
+    fig, axes = plt.subplots(1, n, figsize=figsize)
+    if n == 1:
+        axes = np.array([axes])
     plt.subplots_adjust(wspace=0.3)
 
-    angle_cat = angle_syst_df.sort_values('sum').groupby('category')['unc'].apply(_combine_syst_uncertainties)
-    energy_cat = energy_syst_df.sort_values('sum').groupby('category')['unc'].apply(_combine_syst_uncertainties)
+    cats_per_var = []
+    cat_sums_per_var = []
 
-    angle_cat_sums  = angle_syst_df.groupby('category')['sum'].apply(lambda s: float(np.sqrt(np.sum(s**2))))
-    energy_cat_sums = energy_syst_df.groupby('category')['sum'].apply(lambda s: float(np.sqrt(np.sum(s**2))))
+    for ax, item in zip(axes, syst_vars):
+        syst_output, bins, xlabel = item[0], item[1], item[2]
+        bin_labels = item[3] if len(item) > 3 else None
+        syst_df = syst_output.rate_syst_df
 
-    for category in category_dict.keys():
-        if category not in angle_cat.index:
-            continue
-        style = category_dict[category]
-        axes[1].stairs(
-            angle_cat[category] * 100,
-            angle_bins,
-            lw=1.8,
-            linestyle=style['line'],
-            label=f"{style['label']} ({angle_cat_sums.get(category, 0.):.1%})",
-            color=style['color'],
-            alpha=0.8,
-        )
-        axes[0].stairs(
-            energy_cat[category] * 100,
-            energy_bins,
-            lw=1.8,
-            linestyle=style['line'],
-            label=f"{style['label']} ({energy_cat_sums.get(category, 0.):.1%})",
-            color=style['color'],
-            alpha=0.8,
-        )
+        cat    = syst_df.sort_values('sum').groupby('category')['unc'].apply(_combine_syst_uncertainties)
+        sums   = syst_df.groupby('category')['sum'].apply(lambda s: float(np.sqrt(np.sum(s**2))))
+        cats_per_var.append(cat)
+        cat_sums_per_var.append(sums)
 
-    angle_tot = _combine_syst_uncertainties(angle_syst_df)
-    energy_tot = _combine_syst_uncertainties(energy_syst_df)
+        for category in category_dict.keys():
+            if category not in cat.index:
+                continue
+            style = category_dict[category]
+            ax.stairs(
+                cat[category] * 100,
+                bins,
+                lw=1.8,
+                linestyle=style['line'],
+                label=f"{style['label']} ({sums.get(category, 0.):.1%})",
+                color=style['color'],
+                alpha=0.8,
+            )
 
-    total_angle_sum  = float(np.sqrt(np.sum(angle_syst_df['sum']  ** 2)))
-    total_energy_sum = float(np.sqrt(np.sum(energy_syst_df['sum'] ** 2)))
+        tot = _combine_syst_uncertainties(syst_df)
+        total_sum = float(np.sqrt(np.sum(syst_df['sum'] ** 2)))
+        if tot.size:
+            ax.stairs(tot * 100, bins, lw=2, color='black', label=f'Total ({total_sum:.1%})')
 
-    if angle_tot.size:
-        axes[1].stairs(angle_tot * 100, angle_bins, lw=2, color='black', label=f'Total ({total_angle_sum:.1%})')
-    if energy_tot.size:
-        axes[0].stairs(energy_tot * 100, energy_bins, lw=2, color='black', label=f'Total ({total_energy_sum:.1%})')
-
-    axes[1].set_xlabel(r"Leading shower direction, $\cos\theta$")
-    axes[0].set_xlabel("Leading shower energy [GeV]")
-
-    for ax in axes:
+        ax.set_xlabel(xlabel)
         ax.set_ylabel("Uncertainty on the Event Rate [%]")
         ax.set_ylim(0, 35)
-    axes[0].set_xticks(energy_bins)
-    if energy_bin_labels is not None:
-        axes[0].set_xticklabels(energy_bin_labels)
-    axes[1].set_xticks(angle_bins)
-    if angle_bin_labels is not None:
-        axes[1].set_xticklabels(angle_bin_labels)
-    axes[1].legend(bbox_to_anchor=(1.05, 1), loc='upper left',title="Uncertainty Sources (Normalization %)")
-    for ax in axes:
-        ax.annotate(text=region_label, xy=(0.02, 0.925), xycoords='axes fraction', fontsize=11, fontweight='bold', alpha=0.5)
+        ax.set_xticks(bins)
+        if bin_labels is not None:
+            ax.set_xticklabels(bin_labels)
+        ax.annotate(text=region_label, xy=(0.02, 0.925), xycoords='axes fraction',
+                    fontsize=11, fontweight='bold', alpha=0.5)
 
-    return fig, axes, angle_cat, energy_cat
+    axes[-1].legend(bbox_to_anchor=(1.05, 1), loc='upper left',
+                    title="Uncertainty Sources (Normalization %)")
+
+    return fig, axes, cats_per_var, cat_sums_per_var
 
 
-def plot_syst_breakdown(angle_syst_df: pd.DataFrame,
-                        energy_syst_df: pd.DataFrame,
-                        category: str,
-                        category_dict: dict,
-                        angle_var: VariableConfig | None = None,
-                        energy_var: VariableConfig | None = None,
-                        region_label: str | None = None,
-                        figsize: tuple[int, int] = (10, 4)) -> tuple[plt.Figure, np.ndarray]:
-    """Plot the per-source systematics breakdown for one category."""
-    if angle_var is not None:
-        angle_bins = angle_var.bins
-        angle_bin_labels = list(angle_var.bin_labels) if angle_var.bin_labels is not None else None
-    if energy_var is not None:
-        energy_bins = energy_var.bins
-        energy_bin_labels = list(energy_var.bin_labels) if energy_var.bin_labels is not None else None
-    if angle_var is None or energy_var is None:
-        raise ValueError("angle_var and energy_var must be provided")
+def plot_syst_breakdown(
+    syst_vars: list[tuple],
+    category: str,
+    category_dict: dict,
+    region_label: str | None = None,
+    figsize: tuple[int, int] | None = None,
+) -> tuple[plt.Figure, np.ndarray]:
+    """Plot the per-source systematics breakdown for one category.
+
+    Parameters
+    ----------
+    syst_vars : list of tuple
+        One entry per variable, each a 3- or 4-tuple:
+        ``(SystematicsOutput, bins, xlabel)`` or
+        ``(SystematicsOutput, bins, xlabel, bin_labels)``.
+    category : str
+        Category key from ``category_dict`` to plot.
+    category_dict : dict
+        Mapping of category name → style dict (``color``, ``label``, ``line``).
+    region_label : str, optional
+        Text stamped in the corner of each subplot.
+    figsize : tuple, optional
+        Figure size. Defaults to ``(5 * n_vars, 4)``.
+
+    Returns
+    -------
+    fig, axes
+    """
+    n = len(syst_vars)
+    if figsize is None:
+        figsize = (5 * n, 4)
 
     this_color = category_dict[category]['color']
     this_label = category_dict[category]['label']
 
-    this_angle_df = angle_syst_df[angle_syst_df.category == category].sort_values('sum', ascending=False)
-    this_energy_df = energy_syst_df[energy_syst_df.category == category].sort_values('sum', ascending=False)
-
-    fig, axes = plt.subplots(1, 2, figsize=figsize)
+    fig, axes = plt.subplots(1, n, figsize=figsize)
+    if n == 1:
+        axes = np.array([axes])
     plt.subplots_adjust(wspace=0.3)
 
-    for _, row in this_angle_df.iterrows():
-        axes[1].stairs(
-            row.unc * 100,
-            angle_bins,
-            lw=1.5,
-            label=row.key + f" ({row['sum']:.1%})" if row.top5 else "",
-            alpha=0.5,
-        )
-    for _, row in this_energy_df.iterrows():
-        axes[0].stairs(
-            row.unc * 100,
-            energy_bins,
-            lw=1.5,
-            label=row.key + f" ({row['sum']:.1%})" if row.top5 else "",
-            alpha=0.5,
-        )
+    for ax, item in zip(axes, syst_vars):
+        syst_output, bins, xlabel = item[0], item[1], item[2]
+        bin_labels = item[3] if len(item) > 3 else None
+        syst_df = syst_output.rate_syst_df
 
-    energy_tot = _combine_syst_uncertainties(this_energy_df)
-    angle_tot = _combine_syst_uncertainties(this_angle_df)
+        this_df = syst_df[syst_df.category == category].sort_values('sum', ascending=False)
 
-    energy_sum = float(np.sqrt(np.sum(this_energy_df['sum'] ** 2)))
-    angle_sum  = float(np.sqrt(np.sum(this_angle_df['sum']  ** 2)))
+        for _, row in this_df.iterrows():
+            ax.stairs(
+                row.unc * 100,
+                bins,
+                lw=1.5,
+                label=row.key + f" ({row['sum']:.1%})" if row.top5 else "",
+                alpha=0.5,
+            )
 
-    if energy_tot.size:
-        axes[0].stairs(energy_tot * 100, energy_bins, lw=2, color=this_color, label=f'Total {this_label} ({energy_sum:.1%})')
-    if angle_tot.size:
-        axes[1].stairs(angle_tot * 100, angle_bins, lw=2, color=this_color, label=f'Total {this_label} ({angle_sum:.1%})')
+        tot = _combine_syst_uncertainties(this_df)
+        tot_sum = float(np.sqrt(np.sum(this_df['sum'] ** 2)))
+        if tot.size:
+            ax.stairs(tot * 100, bins, lw=2, color=this_color,
+                      label=f'Total {this_label} ({tot_sum:.1%})')
 
-    axes[0].set_xlabel("Leading shower energy [GeV]")
-    axes[1].set_xlabel(r"Leading shower direction, $\cos\theta$")
-
-    for ax in axes:
+        ax.set_xlabel(xlabel)
         ax.set_ylabel("Uncertainty on the Event Rate [%]")
         ax.set_ylim(0, 35)
+        ax.set_xticks(bins)
+        if bin_labels is not None:
+            ax.set_xticklabels(bin_labels)
         ax.legend(title='top 5 sources', fontsize=9)
-    axes[0].set_xticks(energy_bins)
-    if energy_bin_labels is not None:
-        axes[0].set_xticklabels(energy_bin_labels)
-    axes[1].set_xticks(angle_bins)
-    if angle_bin_labels is not None:
-        axes[1].set_xticklabels(angle_bin_labels)
-
-    if region_label is not None:
-        for ax in axes:
-            ax.annotate(text=region_label, xy=(0.02, 0.925), xycoords='axes fraction', fontsize=11, fontweight='bold', alpha=0.5)
+        if region_label is not None:
+            ax.annotate(text=region_label, xy=(0.02, 0.925), xycoords='axes fraction',
+                        fontsize=11, fontweight='bold', alpha=0.5)
 
     return fig, axes

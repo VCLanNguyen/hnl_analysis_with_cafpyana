@@ -192,7 +192,7 @@ def load_data(
     from .preprocess import preprocess_data, add_pi0
     from .selection import select
     from .utils import merge_hdr
-    from .constants import signal_dict
+    from .analysis import signal_dict
 
     if keys is None:
         keys = _DEFAULT_DATA_KEYS
