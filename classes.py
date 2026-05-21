@@ -182,17 +182,18 @@ class PlottingConfig:
     mult_factor: float = 1.0
     cut_val: list[float] | None = None
     plot_err: bool = True
-    systs: bool | np.ndarray | SystematicsInput | None = None
+    systs: bool | SystematicsInput | SystematicsOutput | None = None
     pdg: bool = False
     pdg_col: tuple | str = 'pfp_shw_truth_p_pdg'
     mode: bool = False
     hatch: list[str] | None = None
     bin_labels: list[str] | None = None
-    generic: bool = False
     overflow: bool = True
     legend_kwargs: dict | None = None
     ratio_min: float = 0.0
     ratio_max: float = 2.0
+    internal: bool = True
+    categories: dict | None = None
 
 
 __all__ = [
