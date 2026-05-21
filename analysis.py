@@ -62,7 +62,7 @@ __all__ = [
     'nue_flux', 'flux_vals', 'integrated_flux',
     'POT_NORM_UNC', 'NTARGETS_UNC',
     # cut helpers
-    'cut_muon_rejection', 'InSpill', 'InScore',
+    'cut_muon_rejection', 'InFiducial', 'InSpill', 'InScore',
     # cut sequences
     'DEFAULT_CUTS', 'SIDEBAND_CUTS',
     # truth categorisation
@@ -185,6 +185,15 @@ NTARGETS_UNC  = 0.01  # fractional uncertainty on number of Ar targets
 # Cut helper functions
 # ---------------------------------------------------------------------------
 
+FV_DET    = "SBND_nu26"
+FV_INZBACK = 0
+
+
+def InFiducial(position):
+    """Fiducial volume cut applied uniformly across selection and signal definition."""
+    return InFV(position, det=FV_DET, inzback=FV_INZBACK)
+
+
 def cut_muon_rejection(df, max_track_length=200):
     return np.isnan(df.primtrk.trk.len) | (df.primtrk.trk.len < max_track_length)
 
@@ -210,7 +219,7 @@ DEFAULT_CUTS = [
     CutSpec("clear_cosmic",    fn=lambda df: df.slc.is_clear_cosmic == 0,                label="clear cosmic"),
     CutSpec("flash_time",      variable=("slc", "barycenterFM", "flashTime"), min=0.335, max=1.935, label="flash time [0.335, 1.935] µs"),
     CutSpec("flash_score",     variable=("slc", "barycenterFM", "score"),     min=0.02,             label="flash score > 0.02"),
-    CutSpec("fiducial_volume", fn=lambda df: InFV(df.slc.vertex, det="SBND_nu26", inzback=0), label="fiducial volume"),
+    CutSpec("fiducial_volume", fn=lambda df: InFiducial(df.slc.vertex), label="fiducial volume"),
     CutSpec("contained",       fn=lambda df: df.slc.contained.margin_5.tot==True, label="contained"),
     CutSpec("nohighyz",        fn=lambda df: df.slc.pfp_notinhigh==True, label="nohighyz"),
     CutSpec("shower_energy",   variable=("primshw", "shw", "reco_energy"),    min=0.5,              label="shower energy > 0.5 GeV"),
@@ -256,7 +265,7 @@ def define_signal(indf: pd.DataFrame, prefix=None):
 
     mcdf = nudf[prefix] if prefix is not None else nudf
 
-    whereFV = InFV(mcdf.position, det="SBND_nu26", inzback=0)
+    whereFV = InFiducial(mcdf.position)
     whereAV = InAV(df=mcdf.position)
     whereCCnue = (
         (mcdf.iscc == 1)
