@@ -177,6 +177,8 @@ def select(indf,
         if stage == spec.name:
             return df_dict if savedict else df
 
+    return df_dict if savedict else df
+
 
 def select_sideband(indf, cuts=None, **kwargs):
     """Apply the sideband cut sequence. Accepts the same kwargs as ``select``."""
@@ -184,4 +186,3 @@ def select_sideband(indf, cuts=None, **kwargs):
         from .analysis import SIDEBAND_CUTS
         cuts = SIDEBAND_CUTS
     return select(indf, cuts=cuts, **kwargs)
-    return df_dict if savedict else df

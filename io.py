@@ -119,7 +119,8 @@ def load_mc(
         _tqdm = None
 
     from .preprocess import preprocess_mc, add_pi0 as _add_pi0
-    from .selection import select, define_signal
+    from .selection import select
+    from .analysis import define_signal
     from .utils import merge_hdr
 
     if keys is None:

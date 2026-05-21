@@ -564,7 +564,11 @@ def get_syst_df(dicts: list, cv_hist: np.ndarray) -> pd.DataFrame:
         for raw_key in d:
             cov = d[raw_key]['cov']
             unc = np.sqrt(np.diag(cov)) / cv_hist
-            tot = float(np.sqrt(np.sum(cov)) / N_tot) if N_tot > 0 else 0.0
+            cov_sum = np.sum(cov)
+            if cov_sum < 0:
+                print(f"Note: sum of covariance matrix for '{raw_key}' is {cov_sum:.3e} (floating-point noise near zero); clamping to 0.")
+                cov_sum = 0.0
+            tot = float(np.sqrt(cov_sum) / N_tot) if N_tot > 0 else 0.0
 
             category = _classify_category(raw_key)
             if category is None:
