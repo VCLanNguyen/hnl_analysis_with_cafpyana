@@ -10,6 +10,7 @@ All functions accept plain and MultiIndex DataFrames. Style and display options 
 be bundled into a :class:`~nueana.classes.PlottingConfig` instance and passed as
 ``config``; keyword arguments take priority over the config.
 """
+from __future__ import annotations
 
 import numpy as np
 import matplotlib.pyplot as plt

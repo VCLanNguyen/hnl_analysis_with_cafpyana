@@ -1,4 +1,6 @@
 """File input/output utilities for loading HDF5 data files."""
+from __future__ import annotations
+
 import gc
 
 import numpy as np

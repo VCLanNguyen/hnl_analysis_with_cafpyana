@@ -44,6 +44,7 @@ Step 3 — load at analysis time:
     detvar_dict = load_detvar_dict('detvars.h5', groups=['pmtgain', 'wiremod'])
     # each entry: {'dv_df': df_or_list, 'cv_df': df, 'pot': float}
 """
+from __future__ import annotations
 
 import os
 import warnings
