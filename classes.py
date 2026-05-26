@@ -88,6 +88,12 @@ class XSecInputs:
     reco_var_true: str | tuple
     true_var_true: str | tuple
 
+    def __post_init__(self):
+        if self.true_signal_df is not None:
+            from .utils import ensure_lexsorted
+            df = ensure_lexsorted(self.true_signal_df, axis=1)
+            object.__setattr__(self, 'true_signal_df', df[df.signal == 0])
+
 
 @dataclass(frozen=True)
 class SystematicsOutput:

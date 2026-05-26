@@ -139,37 +139,55 @@ def get_xsec_hists(reco_df: pd.DataFrame,
         Per-universe response (smearing) matrix. Only returned when
         ``return_response=True``.
     """
-    true_signal_df    = xsec_inputs.true_signal_df
+    true_signal_df    = xsec_inputs.true_signal_df   # pre-filtered & lexsorted by XSecInputs
     true_signal_scale = xsec_inputs.true_signal_scale
     reco_var_true     = xsec_inputs.reco_var_true
     true_var_true     = xsec_inputs.true_var_true
-    
-    true_signal_df = ensure_lexsorted(true_signal_df,axis=1)
 
-    true_signal_df = true_signal_df[true_signal_df.signal==0]  # ensure signal-only truth sample
-    signal_mask = reco_df.signal==0
-    smearing = np.apply_along_axis(get_hist2d,0,
-                                   reco_weights[signal_mask],
-                                   reco_df[signal_mask][reco_var_reco],
-                                   reco_df[signal_mask][reco_var_true],
-                                   bins)
+    n_bins      = len(bins) - 1
+    signal_mask = reco_df.signal == 0
 
-    sig_hist_univ = np.apply_along_axis(get_hist1d,0,
-                                        true_signal_weights,
-                                        true_signal_df[true_var_true],bins)
-    sig_hist_cv = get_hist1d(np.ones(len(true_signal_df))*true_signal_scale,
-                              true_signal_df[true_var_true],
-                              bins)
-    
-    response = np.divide(smearing,sig_hist_univ,
+    def _dig(arr):
+        a = np.asarray(arr, dtype=float)
+        a = np.nan_to_num(a, nan=bins[-1]-1e-10, posinf=bins[-1]-1e-10, neginf=bins[0])
+        return np.clip(
+            np.searchsorted(bins, np.clip(a, bins[0], bins[-1]-1e-10), side='right') - 1,
+            0, n_bins - 1)
+
+    # smearing matrix: (n_bins_reco, n_bins_true, n_univs)
+    reco_sig = reco_df[signal_mask]
+    ri   = _dig(reco_sig[reco_var_reco])
+    ti   = _dig(reco_sig[reco_var_true])
+    flat = ri * n_bins + ti
+    w_sig = reco_weights[signal_mask]
+    smearing = np.array([
+        np.bincount(flat, weights=w_sig[:, u], minlength=n_bins * n_bins)
+        for u in range(w_sig.shape[1])
+    ]).T.reshape(n_bins, n_bins, -1)
+
+    # signal truth histograms: (n_bins, n_univs)
+    tidx = _dig(true_signal_df[true_var_true])
+    sig_hist_univ = np.array([
+        np.bincount(tidx, weights=true_signal_weights[:, u], minlength=n_bins)
+        for u in range(true_signal_weights.shape[1])
+    ]).T
+
+    sig_hist_cv = get_hist1d(np.ones(len(true_signal_df)) * true_signal_scale,
+                             true_signal_df[true_var_true], bins)
+
+    response = np.divide(smearing, sig_hist_univ,
                          out=np.zeros_like(smearing),
-                         where=sig_hist_univ>0)
-    # response x cv
+                         where=sig_hist_univ > 0)
     sig_reco_hists = np.einsum('ijk,j->ik', response, sig_hist_cv)
-    bkg_reco_hists = np.apply_along_axis(get_hist1d,0,
-                                         reco_weights[~signal_mask],
-                                         reco_df[~signal_mask][reco_var_reco],
-                                         bins)
+
+    # background histograms: (n_bins, n_univs)
+    bidx  = _dig(reco_df[~signal_mask][reco_var_reco])
+    w_bkg = reco_weights[~signal_mask]
+    bkg_reco_hists = np.array([
+        np.bincount(bidx, weights=w_bkg[:, u], minlength=n_bins)
+        for u in range(w_bkg.shape[1])
+    ]).T
+
     hists = sig_reco_hists + bkg_reco_hists
     if return_response:
         return hists, response
