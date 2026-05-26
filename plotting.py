@@ -67,7 +67,7 @@ def annotate_sbnd(ax, internal=True):
     """
     label = "SBND Internal" if internal else "SBND Analysis In Progress"
     ax.annotate(label, xy=(0.0, 1.02), xycoords='axes fraction', ha='left', color='gray', fontweight='bold')
-    ax.annotate("GENIE v3.40 AR23_00i_00_000", xy=(1.0, 1.02), xycoords='axes fraction', ha='right', color='gray')
+    # ax.annotate("GENIE v3.40 AR23_00i_00_000", xy=(1.0, 1.02), xycoords='axes fraction', ha='right', color='gray')
 
 def plot_var(df: pd.DataFrame,
              var: tuple | str,
@@ -757,7 +757,7 @@ def plot_detvar(
     key: str,
     var: str | tuple,
     bins: np.ndarray,
-    figsize: tuple[int, int] = (7, 5),
+    figsize: tuple[int, int] = (5, 5),
     xlabel: str = "",
     ylabel: str = "Events / POT",
     ratio_min: float = 0.5,
@@ -857,6 +857,7 @@ def plot_syst_category_breakdown(
     category_dict: dict,
     region_label: str = "Signal Region",
     figsize: tuple[int, int] | None = None,
+    xsec: bool = False,
 ) -> tuple[plt.Figure, np.ndarray, list, list]:
     """Plot the category-level systematics summary for any number of variables.
 
@@ -872,6 +873,9 @@ def plot_syst_category_breakdown(
         Text stamped in the corner of each subplot.
     figsize : tuple, optional
         Figure size. Defaults to ``(5 * n_vars, 4)``.
+    xsec : bool, default False
+        If True, plot uncertainties on the cross section (``xsec_syst_df``)
+        instead of the event rate (``rate_syst_df``).
 
     Returns
     -------
@@ -894,7 +898,12 @@ def plot_syst_category_breakdown(
     for ax, item in zip(axes, syst_vars):
         syst_output, bins, xlabel = item[0], item[1], item[2]
         bin_labels = item[3] if len(item) > 3 else None
-        syst_df = syst_output.rate_syst_df
+        if xsec:
+            if not syst_output.has_xsec:
+                raise ValueError("SystematicsOutput does not contain xsec results; recompute with xsec_inputs set.")
+            syst_df = syst_output.xsec_syst_df
+        else:
+            syst_df = syst_output.rate_syst_df
 
         cat    = syst_df.sort_values('sum').groupby('category')['unc'].apply(_combine_syst_uncertainties)
         sums   = syst_df.groupby('category')['sum'].apply(lambda s: float(np.sqrt(np.sum(s**2))))
@@ -921,7 +930,8 @@ def plot_syst_category_breakdown(
             ax.stairs(tot * 100, bins, lw=2, color='black', label=f'Total ({total_sum:.1%})')
 
         ax.set_xlabel(xlabel,fontsize=12)
-        ax.set_ylabel("Uncertainty on the Event Rate [%]")
+        _ylabel = "Uncertainty on the Cross Section [%]" if xsec else "Uncertainty on the Event Rate [%]"
+        ax.set_ylabel(_ylabel)
         ax.set_ylim(0, 35)
         ax.set_xticks(bins)
         if bin_labels is not None:
@@ -941,6 +951,7 @@ def plot_syst_breakdown(
     category_dict: dict,
     region_label: str | None = None,
     figsize: tuple[int, int] | None = None,
+    xsec: bool = False,
 ) -> tuple[plt.Figure, np.ndarray]:
     """Plot the per-source systematics breakdown for one category.
 
@@ -955,9 +966,12 @@ def plot_syst_breakdown(
     category_dict : dict
         Mapping of category name → style dict (``color``, ``label``, ``line``).
     region_label : str, optional
-        Text stamped in the corner of each subplot.
+        Text stamped in the corner ojf each subplot.
     figsize : tuple, optional
         Figure size. Defaults to ``(5 * n_vars, 4)``.
+    xsec : bool, default False
+        If True, plot uncertainties on the cross section (``xsec_syst_df``)
+        instead of the event rate (``rate_syst_df``).
 
     Returns
     -------
@@ -978,7 +992,12 @@ def plot_syst_breakdown(
     for ax, item in zip(axes, syst_vars):
         syst_output, bins, xlabel = item[0], item[1], item[2]
         bin_labels = item[3] if len(item) > 3 else None
-        syst_df = syst_output.rate_syst_df
+        if xsec:
+            if not syst_output.has_xsec:
+                raise ValueError("SystematicsOutput does not contain xsec results; recompute with xsec_inputs set.")
+            syst_df = syst_output.xsec_syst_df
+        else:
+            syst_df = syst_output.rate_syst_df
 
         this_df = syst_df[syst_df.category == category].sort_values('sum', ascending=False)
 
@@ -998,7 +1017,8 @@ def plot_syst_breakdown(
                       label=f'Total {this_label} ({tot_sum:.1%})')
 
         ax.set_xlabel(xlabel)
-        ax.set_ylabel("Uncertainty on the Event Rate [%]")
+        _ylabel = "Uncertainty on the Cross Section [%]" if xsec else "Uncertainty on the Event Rate [%]"
+        ax.set_ylabel(_ylabel)
         ax.set_ylim(0, 35)
         ax.set_xticks(bins)
         if bin_labels is not None:
