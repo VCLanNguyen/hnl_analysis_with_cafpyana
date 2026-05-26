@@ -216,6 +216,8 @@ def get_syst_hists(reco_df: pd.DataFrame,
 
     if scale and mcbnb_pot is not None:
         scaling = flux_pot_weights(reco_df, mcbnb_pot, integrated_flux)
+    elif 'weights_mc' in reco_df.columns.get_level_values(0):
+        scaling = reco_df.weights_mc.values.ravel()
     else:
         scaling = np.ones(reco_df.shape[0])
     for col in reco_df.columns:

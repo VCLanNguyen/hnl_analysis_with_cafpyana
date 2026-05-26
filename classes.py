@@ -159,9 +159,14 @@ class SystematicsInput:
     detvar_dict: object = None
 
     def to_kwargs(self) -> dict:
-        """Return fields as a dict suitable for unpacking into get_total_cov."""
+        """Return fields as a dict suitable for unpacking into get_total_cov.
+
+        Fields whose value is None are omitted so that explicit keyword
+        arguments at the call site take precedence over the dataclass defaults.
+        """
         from dataclasses import fields
-        return {f.name: getattr(self, f.name) for f in fields(self)}
+        return {f.name: getattr(self, f.name) for f in fields(self)
+                if getattr(self, f.name) is not None}
 
 
 @dataclass
@@ -192,6 +197,7 @@ class PlottingConfig:
     legend_kwargs: dict | None = None
     ratio_min: float = 0.0
     ratio_max: float = 2.0
+    data_first: bool = True
     internal: bool = True
     categories: dict | None = None
 

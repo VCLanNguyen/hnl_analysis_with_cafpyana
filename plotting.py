@@ -44,6 +44,18 @@ from .syst import get_syst
 from .utils import get_hist1d
 from .classes import PlottingConfig, VariableConfig, SystematicsInput, SystematicsOutput
 
+def _clipped_minor_locator(xmin, xmax):
+    """AutoMinorLocator whose ticks are clipped to [xmin, xmax].
+
+    Keeps the visual axis margin intact while preventing minor ticks
+    from appearing in the margin area outside the data range.
+    """
+    class _L(mpl.ticker.AutoMinorLocator):
+        def __call__(self):
+            locs = super().__call__()
+            return locs[(locs >= xmin) & (locs <= xmax)]
+    return _L()
+
 def annotate_sbnd(ax, internal=True):
     """Stamp a status label in the upper-left and the tune label in the upper-right of *ax*.
 
@@ -399,20 +411,17 @@ def plot_var(df: pd.DataFrame,
         _systs = np.append(systs_err[0], systs_err)
         _stats = np.append(stats_err[0], stats_err)
 
-        if has_systs and not calc_separate_mcstat:
-            # Cases 2 and 1+mcstat: stat is already folded into the covariance → combined band.
+        if has_systs:
+            # Always combine stat and syst in quadrature into a single band.
+            # When MCstat is folded into the covariance (SystematicsInput/Output),
+            # stats_err is zero so combined reduces to systs_err unchanged.
+            combined_err = np.sqrt(systs_err**2 + stats_err**2)
+            _combined = np.append(combined_err[0], combined_err)
             ax.fill_between(bins,
-                            steps[-1] - _systs, steps[-1] + _systs,
+                            steps[-1] - _combined, steps[-1] + _combined,
                             **systs_options, label="MC stat.+syst.")
-        elif has_systs and calc_separate_mcstat:
-            # Case 1 without mcstat: draw syst and stat bands separately.
-            min_syst = steps[-1] - _systs
-            pls_syst = steps[-1] + _systs
-            ax.fill_between(bins, min_syst, pls_syst, **systs_options, label="MC syst.")
-            ax.fill_between(bins, min_syst - _stats, min_syst, **stats_options, label="MC stat.")
-            ax.fill_between(bins, pls_syst, pls_syst + _stats, **stats_options)
         else:
-            # Case 3: no systematics — stat error only.
+            # systs=None — stat error only.
             ax.fill_between(bins,
                             steps[-1] - _stats, steps[-1] + _stats,
                             **stats_options, label="MC stat.")
@@ -431,15 +440,17 @@ def plot_var(df: pd.DataFrame,
     syst_dict['__mcstat_err__']       = _mcstat_err_annot if _mcstat_err_annot is not None else stats_err
 
     _var_str = var if isinstance(var, str) else '_'.join(var)
-    ax.set_xlabel(_var_str) if xlabel == "" else ax.set_xlabel(xlabel)
-    ax.set_ylabel("Counts") if ylabel == "" else ax.set_ylabel(ylabel)
+    ax.set_xlabel(_var_str) if xlabel == "" else ax.set_xlabel(xlabel, fontsize=12)
+    ax.set_ylabel("Counts") if ylabel == "" else ax.set_ylabel(ylabel, fontsize=12)
     ax.set_title (_var_str) if title  == "" else ax.set_title (title)
     annotate_sbnd(ax, internal=internal)
     
     if bin_labels is not None:
         ax.set_xticks(bins)
         ax.set_xticklabels(bin_labels)
-    
+    else:
+        ax.xaxis.set_minor_locator(_clipped_minor_locator(bins[0], bins[-1]))
+
     # Apply legend with custom kwargs
     default_legend_kwargs = {'ncol': 2, 'loc': 'upper right'}
     if legend_kwargs:
@@ -521,6 +532,7 @@ def plot_mc_data(mc_df: pd.DataFrame,
                  ratio_min: float = 0.0,
                  ratio_max: float = 2.0,
                  annot: bool = True,
+                 data_first: bool = True,
                  savefig: str = "",
                  config: PlottingConfig | None = None,
                  **kwargs) -> tuple[plt.Figure, plt.Axes, plt.Axes]:
@@ -569,12 +581,13 @@ def plot_mc_data(mc_df: pd.DataFrame,
     """
     _p = {f.name: getattr(config, f.name) for f in _dc_fields(config)} if config is not None else {}
     _p.update(kwargs)
-    ratio_min = _p.get('ratio_min', ratio_min)
-    ratio_max = _p.get('ratio_max', ratio_max)
+    ratio_min  = _p.get('ratio_min', ratio_min)
+    ratio_max  = _p.get('ratio_max', ratio_max)
+    data_first = _p.get('data_first', data_first)
     fig = plt.figure(figsize=figsize)
-    gs = GridSpec(2, 1, height_ratios=[6, 1], hspace=0.4)
+    gs = GridSpec(2, 1, height_ratios=[6, 1], hspace=0.05)
     ax_main = fig.add_subplot(gs[0])
-    ax_sub = fig.add_subplot(gs[1])
+    ax_sub = fig.add_subplot(gs[1], sharex=ax_main)
 
     data_args = dict(df=data_df, var=var, bins=bins, ax=ax_main, normalize=_p.get('normalize', False), overflow=_p.get('overflow', True))
     mc_args   = dict(df=mc_df, var=var, bins=bins, ax=ax_main, config=config, **kwargs)
@@ -605,16 +618,22 @@ def plot_mc_data(mc_df: pd.DataFrame,
         
     bin_centers = 0.5 * (mc_bins[1:] + mc_bins[:-1])
     
-    ax_sub.errorbar(bin_centers, ratio, yerr=ratio_err, fmt='s', markersize=3,color='black', zorder=1e3, label='data/MC ratio')
+    ax_sub.errorbar(bin_centers, ratio, yerr=ratio_err, fmt='s', markersize=3,color='black', zorder=1e3, label='Data/Pred ratio')
     # fill_between needs last entry to be repeated 
-    ax_sub.fill_between(mc_bins,ms_err, ps_err, step="pre", color=mpl.colors.to_rgba("gray", alpha=0.4), lw=0.0, label='MC err.')
+    ax_sub.fill_between(mc_bins,ms_err, ps_err, step="pre", color=mpl.colors.to_rgba("gray", alpha=0.4), lw=0.0, label='Pred err.')
     
     ax_sub.axhline(1, color='red', linestyle='--', linewidth=1, zorder=0,label="y=1.0")
     ax_sub.set_xlim(xmin, xmax)
     ax_sub.set_ylim(ratio_min, ratio_max)
-    ax_sub.set_ylabel("Data/MC")
-    ax_sub.legend(loc='upper center', bbox_to_anchor=(0.5, 1.5),
-                  ncol=3,fontsize='small',frameon=False)
+    ax_sub.set_ylabel("Data/Pred")
+    # Move xlabel to ratio panel and suppress top-panel x-axis tick labels.
+    ax_sub.set_xlabel(ax_main.get_xlabel(), fontsize=12)
+    ax_main.set_xlabel("")
+    plt.setp(ax_main.get_xticklabels(), visible=False)
+    ax_main.tick_params(axis='x', which='both', bottom=True, top=False)
+    # ax_sub.legend(loc='upper center', bbox_to_anchor=(0.5, 1.4),
+                #   ncol=3, fontsize='small', frameon=False)
+
     cut_val = _p.get('cut_val', None)
     if cut_val is not None:
         for cut in cut_val:
@@ -690,7 +709,7 @@ def plot_mc_data(mc_df: pd.DataFrame,
     ann_ha = 'right' if anchor_right else 'left'
 
     if annot:
-        ax_main.annotate(rf"$\Sigma$ Data/MC = {total_ratio:.2f} $\pm$ {total_ratio_stat_err:.2f} (stat.) $\pm$ {total_ratio_syst_err:.2f} (syst.)",
+        ax_main.annotate(rf"$\Sigma$ Data/Pred = {total_ratio:.2f} $\pm$ {total_ratio_stat_err:.2f} (stat.) $\pm$ {total_ratio_syst_err:.2f} (syst.)",
                         xy=(ann_x, ann_y),
                         xycoords=ax_main.transAxes,
                         xytext=(0, -6),
@@ -706,9 +725,24 @@ def plot_mc_data(mc_df: pd.DataFrame,
 
     if bin_labels is not None:
         ax_main.set_xticks(bins)
-        ax_main.set_xticklabels(bin_labels)
+        plt.setp(ax_main.get_xticklabels(), visible=False)
+        ax_main.xaxis.set_minor_locator(mpl.ticker.NullLocator())
         ax_sub.set_xticks(bins)
         ax_sub.set_xticklabels(bin_labels)
+    else:
+        ax_sub.xaxis.set_minor_locator(_clipped_minor_locator(mc_bins[0], mc_bins[-1]))
+    ax_sub.yaxis.set_minor_locator(mpl.ticker.AutoMinorLocator())
+
+
+    if data_first:
+        handles, labels = ax_main.get_legend_handles_labels()
+        idx = next((i for i, l in enumerate(labels) if l.startswith('data')), None)
+        if idx is not None and idx != 0:
+            order = [idx] + [i for i in range(len(labels)) if i != idx]
+            _leg_kw = {'ncol': 2, 'loc': 'upper right'}
+            _leg_kw.update(_p.get('legend_kwargs') or {})
+            ax_main.legend([handles[i] for i in order], [labels[i] for i in order], **_leg_kw)
+
     annotate_sbnd(ax_main, internal=_p.get('internal', True))
 
     if savefig!="":
@@ -772,7 +806,7 @@ def plot_detvar(
     ]
 
     fig = plt.figure(figsize=figsize)
-    gs       = GridSpec(2, 1, height_ratios=[4, 1], hspace=0.35)
+    gs       = GridSpec(2, 1, height_ratios=[4, 1], hspace=0.15)
     ax_main  = fig.add_subplot(gs[0])
     ax_ratio = fig.add_subplot(gs[1])
 
@@ -790,7 +824,7 @@ def plot_detvar(
     ax_ratio.set_ylim(ratio_min, ratio_max)
     ax_ratio.set_ylabel("DV / CV")
     if xlabel:
-        ax_ratio.set_xlabel(xlabel)
+        ax_ratio.set_xlabel(xlabel,fontsize=12)
 
     xmin, xmax = ax_main.get_xlim()
     ax_ratio.set_xlim(xmin, xmax)
@@ -798,6 +832,8 @@ def plot_detvar(
     ax_main.set_ylabel(ylabel)
     ax_main.set_title(key)
     ax_main.legend()
+    ax_main.xaxis.set_minor_locator(_clipped_minor_locator(bins[0], bins[-1]))
+    ax_ratio.xaxis.set_minor_locator(_clipped_minor_locator(bins[0], bins[-1]))
     annotate_sbnd(ax_main, internal=internal)
 
     return fig, ax_main, ax_ratio
@@ -883,7 +919,7 @@ def plot_syst_category_breakdown(
         if tot.size:
             ax.stairs(tot * 100, bins, lw=2, color='black', label=f'Total ({total_sum:.1%})')
 
-        ax.set_xlabel(xlabel)
+        ax.set_xlabel(xlabel,fontsize=12)
         ax.set_ylabel("Uncertainty on the Event Rate [%]")
         ax.set_ylim(0, 35)
         ax.set_xticks(bins)
