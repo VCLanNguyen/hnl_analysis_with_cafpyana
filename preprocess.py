@@ -314,8 +314,8 @@ def add_pi0(df: pd.DataFrame) -> pd.DataFrame:
         columns.
     """
     name = 'pi0'
-    # if _skip_if_applied(df, name):
-    #     return df
+    if _skip_if_applied(df, name):
+        return df
 
     def _valid(s, sentinel=-999):
         return s.where(s != sentinel)
