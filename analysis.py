@@ -226,20 +226,20 @@ def InScore(df, score_cut=0.02):
 # ---------------------------------------------------------------------------
 
 DEFAULT_CUTS = [
-    CutSpec("flash_pe",        variable=("slc", "barycenterFM", "flashPEs"),  min=2e3,   label="flash PE > 2000"),
-    CutSpec("nu_score",        variable=("slc", "nu_score"),                  min=0.5,   label="nu score > 0.5"),
-    CutSpec("clear_cosmic",    fn=lambda df: df.slc.is_clear_cosmic == 0,                label="clear cosmic"),
+    CutSpec("flash_pe",        variable=("slc", "barycenterFM", "flashPEs"),  min=2e3,              label="flash PE > 2000"),
+    CutSpec("nu_score",        variable=("slc", "nu_score"),                  min=0.5,              label="nu score > 0.5"),
+    CutSpec("clear_cosmic",    fn=lambda df: df.slc.is_clear_cosmic == 0,                           label="not clear cosmic"),
     CutSpec("flash_time",      variable=("slc", "barycenterFM", "flashTime"), min=0.335, max=1.935, label="flash time [0.335, 1.935] µs"),
     CutSpec("flash_score",     variable=("slc", "barycenterFM", "score"),     min=0.02,             label="flash score > 0.02"),
-    CutSpec("fiducial_volume", fn=lambda df: InFiducial(df.slc.vertex), label="fiducial volume"),
-    CutSpec("contained",       fn=lambda df: df.slc.contained.margin_5.tot==True, label="contained"),
-    CutSpec("nohighyz",        fn=lambda df: df.slc.pfp_notinhigh==True, label="nohighyz"),
+    CutSpec("fiducial_volume", fn=lambda df: InFiducial(df.slc.vertex),                             label="fiducial volume"),
+    CutSpec("contained",       fn=lambda df: df.slc.contained.margin_5.tot==True,                   label="contained (5cm margin)"),
+    CutSpec("nohighyz",        fn=lambda df: df.slc.pfp_notinhigh==True,                            label="highyz activity veto"),
     CutSpec("shower_energy",   variable=("primshw", "shw", "reco_energy"),    min=0.5,              label="shower energy > 0.5 GeV"),
-    CutSpec("muon_rejection",  fn=cut_muon_rejection,                                              label="track length < 200 cm"),
-    CutSpec("conversion_gap",  variable=("primshw", "shw", "conversion_gap"), min=0.001, max=2,    label="conversion gap [0.001, 2] cm"),
-    CutSpec("dedx",            variable=("primshw", "shw", "bestplane_dEdx"), min=1.25,  max=2.5,  label="dE/dx [1.25, 2.5] MeV/cm"),
-    CutSpec("opening_angle",   variable=("primshw", "shw", "open_angle"),     min=0.03,  max=0.15, label="opening angle [0.03, 0.15] rad"),
-    CutSpec("shower_length",   variable=("primshw", "shw", "len"),            min=10,    max=200,  label="shower length [10, 200] cm"),
+    CutSpec("muon_rejection",  fn=cut_muon_rejection,                                               label="track length < 200 cm"),
+    CutSpec("conversion_gap",  variable=("primshw", "shw", "conversion_gap"), min=0.001, max=2,     label="conversion gap [0.001, 2] cm"),
+    CutSpec("dedx",            variable=("primshw", "shw", "bestplane_dEdx"), min=1.25,  max=2.5,   label="dE/dx [1.25, 2.5] MeV/cm"),
+    CutSpec("opening_angle",   variable=("primshw", "shw", "open_angle"),     min=0.03,  max=0.15,  label="opening angle [0.03, 0.15] rad"),
+    CutSpec("shower_length",   variable=("primshw", "shw", "len"),            min=10,    max=200,   label="shower length [10, 200] cm"),
 ]
 
 # Sideband: built from DEFAULT_CUTS by overriding the cuts that differ.
