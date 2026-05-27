@@ -659,8 +659,11 @@ def get_syst_df(dicts: list, cv_hist: np.ndarray) -> pd.DataFrame:
     Returns
     -------
     pd.DataFrame
-        Columns: ``key``, ``category``, ``subcategory``, ``unc``, ``sum``, ``top5``.
-        Sorted by category then mean fractional uncertainty (descending).
+        Columns: ``key``, ``category``, ``subcategory``, ``unc_diag``, ``unc_diag_avg``, ``unc_norm``, ``top5``.
+        ``unc_diag``     — per-bin fractional uncertainty: sqrt(diag(cov)) / cv.
+        ``unc_diag_avg`` — mean of ``unc_diag``; summary of per-bin shape uncertainty.
+        ``unc_norm``     — normalization fraction: sqrt(sum_ij cov[i,j]) / sum(cv).
+        Sorted by category then ``unc_norm`` (descending).
         ``top5`` flags the five largest sources per category.
     """
     records = []
@@ -669,19 +672,19 @@ def get_syst_df(dicts: list, cv_hist: np.ndarray) -> pd.DataFrame:
     for d in dicts:
         for raw_key in d:
             cov = d[raw_key]['cov']
-            unc = np.sqrt(np.diag(cov)) / cv_hist
+            unc_diag = np.sqrt(np.diag(cov)) / cv_hist
             cov_sum = np.sum(cov)
             if cov_sum < 0:
                 print(f"Note: sum of covariance matrix for '{raw_key}' is {cov_sum:.3e} (floating-point noise near zero); clamping to 0.")
                 cov_sum = 0.0
-            tot = float(np.sqrt(cov_sum) / N_tot) if N_tot > 0 else 0.0
+            unc_norm = float(np.sqrt(cov_sum) / N_tot) if N_tot > 0 else 0.0
 
             category = _classify_category(raw_key)
             if category is None:
                 print(f"Warning: category not found for key '{raw_key}'")
                 records.append({
                     "key": raw_key, "category": "Other", "subcategory": "Other",
-                    "unc": unc, "sum": tot,
+                    "unc_diag": unc_diag, "unc_diag_avg": float(np.mean(unc_diag)), "unc_norm": unc_norm,
                 })
                 continue
 
@@ -692,11 +695,11 @@ def get_syst_df(dicts: list, cv_hist: np.ndarray) -> pd.DataFrame:
             subcategory = _classify_detvar_subcategory(extracted_key) if category == "DetVar" else category
             records.append({
                 "key": extracted_key, "category": category, "subcategory": subcategory,
-                "unc": unc, "sum": tot,
+                "unc_diag": unc_diag, "unc_diag_avg": float(np.mean(unc_diag)), "unc_norm": unc_norm,
             })
 
-    syst_df = pd.DataFrame(records).sort_values(['category', 'sum'], ascending=[False, False])
-    syst_df['top5'] = syst_df.groupby('category')['sum'].rank(method='first', ascending=False) <= 5
+    syst_df = pd.DataFrame(records).sort_values(['category', 'unc_norm'], ascending=[False, False])
+    syst_df['top5'] = syst_df.groupby('category')['unc_norm'].rank(method='first', ascending=False) <= 5
     return syst_df
 
 def make_multiverse_weights(evtdf, knob_list, n_univs=100, evt_prefix=None, nudf=None,

@@ -136,13 +136,14 @@ def add_uncertainty(
     target
         Where to apply this uncertainty: "rate", "xsec", or "both".
     unc
-        Optional per-bin fractional uncertainty array to store in the df.
+        Optional per-bin fractional uncertainty array (``unc_diag`` column).
         Defaults to sqrt(diag(cov))/hist_cv.
     hists
         Optional universe histogram array stored in the systematic dictionary.
         Shape must be (nbins, nuniverses) or (nbins,).
     sum_value
-        Optional summary scalar for the df. Defaults to mean(unc).
+        Optional normalization fraction (``unc_norm`` column).
+        Defaults to sqrt(sum_ij cov[i,j]) / sum(hist_cv).
     top5
         Value for the `top5` column in the added row.
     """
@@ -171,7 +172,9 @@ def add_uncertainty(
             raise ValueError(f"unc shape {unc.shape} does not match hist_cv shape {rate_hist_cv.shape}")
 
     if sum_value is None:
-        sum_value = float(np.mean(unc))
+        cov_sum = max(0.0, float(np.sum(cov)))
+        n_tot   = float(np.sum(rate_hist_cv))
+        sum_value = float(np.sqrt(cov_sum) / n_tot) if n_tot > 0 else 0.0
 
     if hists is not None:
         hists = np.asarray(hists, dtype=float)
@@ -186,8 +189,9 @@ def add_uncertainty(
         {
             "key": [key],
             "category": [category],
-            "unc": [unc],
-            "sum": [sum_value],
+            "unc_diag": [unc],
+            "unc_diag_avg": [float(np.mean(unc))],
+            "unc_norm": [sum_value],
             "top5": [top5],
         }
     )
@@ -465,7 +469,7 @@ def get_total_cov(reco_df, reco_var, bins, mcbnb_pot,
     signal_mask = sorted_df.signal == 0
     xsec_hist_cv = get_hist1d(data=sorted_df[signal_mask][reco_var], weights=_fpw[signal_mask], bins=bins)
 
-    empty_syst_df = pd.DataFrame(columns=["key", "category", "unc", "sum", "top5"])
+    empty_syst_df = pd.DataFrame(columns=["key", "category", "unc_diag", "unc_diag_avg", "unc_norm", "top5"])
     n_bins = rate_hist_cv.size
 
     rate_syst_dict: dict = {}
@@ -501,16 +505,18 @@ def get_total_cov(reco_df, reco_var, bins, mcbnb_pot,
         flux_scale = integrated_flux * (projected_pot / 1e6)
         data_unc = np.divide(data_err, flux_scale * rate_hist_cv,
                              out=np.zeros_like(data_err, dtype=float), where=rate_hist_cv > 0)
+        _data_unc_norm = float(np.sqrt(np.sum(data_err**2))) / (flux_scale * float(np.sum(rate_hist_cv))) if np.sum(rate_hist_cv) > 0 else 0.0
         rate_syst_frames.append(pd.DataFrame(
-            {'key': ['Datastat'], 'category': ['Datastat'], 'unc': [data_unc],
-             'sum': [np.mean(data_unc)], 'top5': [False]}
+            {'key': ['Datastat'], 'category': ['Datastat'], 'unc_diag': [data_unc],
+             'unc_diag_avg': [float(np.mean(data_unc))], 'unc_norm': [_data_unc_norm], 'top5': [False]}
         ))
         if include_xsec:
             data_unc_xsec = np.divide(data_err, flux_scale * xsec_hist_cv,
                                       out=np.zeros_like(data_err, dtype=float), where=xsec_hist_cv > 0)
+            _data_unc_norm_xsec = float(np.sqrt(np.sum(data_err**2))) / (flux_scale * float(np.sum(xsec_hist_cv))) if np.sum(xsec_hist_cv) > 0 else 0.0
             xsec_syst_frames.append(pd.DataFrame(
-                {'key': ['Datastat'], 'category': ['Datastat'], 'unc': [data_unc_xsec],
-                 'sum': [np.mean(data_unc_xsec)], 'top5': [False]}
+                {'key': ['Datastat'], 'category': ['Datastat'], 'unc_diag': [data_unc_xsec],
+                 'unc_diag_avg': [float(np.mean(data_unc_xsec))], 'unc_norm': [_data_unc_norm_xsec], 'top5': [False]}
             ))
 
     rate_syst_df = pd.concat(rate_syst_frames, ignore_index=True) if rate_syst_frames else empty_syst_df.copy()

@@ -857,7 +857,7 @@ def _combine_syst_uncertainties(syst_df: pd.DataFrame) -> np.ndarray:
     if isinstance(syst_df, pd.Series):
         unc_values = np.stack(syst_df.to_numpy())
     else:
-        unc_values = np.stack(syst_df['unc'].to_numpy())
+        unc_values = np.stack(syst_df['unc_diag'].to_numpy())
     return np.sqrt(np.sum(np.square(unc_values), axis=0))
 
 
@@ -914,8 +914,8 @@ def plot_syst_category_breakdown(
         else:
             syst_df = syst_output.rate_syst_df
 
-        cat    = syst_df.sort_values('sum').groupby('category')['unc'].apply(_combine_syst_uncertainties)
-        sums   = syst_df.groupby('category')['sum'].apply(lambda s: float(np.sqrt(np.sum(s**2))))
+        cat    = syst_df.sort_values('unc_norm').groupby('category')['unc_diag'].apply(_combine_syst_uncertainties)
+        sums   = syst_df.groupby('category')['unc_norm'].apply(lambda s: float(np.sqrt(np.sum(s**2))))
         cats_per_var.append(cat)
         cat_sums_per_var.append(sums)
 
@@ -934,7 +934,7 @@ def plot_syst_category_breakdown(
             )
 
         tot = _combine_syst_uncertainties(syst_df)
-        total_sum = float(np.sqrt(np.sum(syst_df['sum'] ** 2)))
+        total_sum = float(np.sqrt(np.sum(syst_df['unc_norm'] ** 2)))
         if tot.size:
             ax.stairs(tot * 100, bins, lw=2, color='black', label=f'Total ({total_sum:.1%})')
 
@@ -1008,19 +1008,19 @@ def plot_syst_breakdown(
         else:
             syst_df = syst_output.rate_syst_df
 
-        this_df = syst_df[syst_df.category == category].sort_values('sum', ascending=False)
+        this_df = syst_df[syst_df.category == category].sort_values('unc_norm', ascending=False)
 
         for _, row in this_df.iterrows():
             ax.stairs(
-                row.unc * 100,
+                row.unc_diag * 100,
                 bins,
                 lw=1.5,
-                label=row.key + f" ({row['sum']:.1%})" if row.top5 else "",
+                label=row.key + f" ({row['unc_norm']:.1%})" if row.top5 else "",
                 alpha=0.5,
             )
 
         tot = _combine_syst_uncertainties(this_df)
-        tot_sum = float(np.sqrt(np.sum(this_df['sum'] ** 2)))
+        tot_sum = float(np.sqrt(np.sum(this_df['unc_norm'] ** 2)))
         if tot.size:
             ax.stairs(tot * 100, bins, lw=2, color=this_color,
                       label=f'Total {this_label} ({tot_sum:.1%})')
