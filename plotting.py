@@ -867,6 +867,8 @@ def plot_syst_category_breakdown(
     region_label: str = "Signal Region",
     figsize: tuple[int, int] | None = None,
     xsec: bool = False,
+    show_cv: bool = False,
+    projected_pot: float = 1e20,
 ) -> tuple[plt.Figure, np.ndarray, list, list]:
     """Plot the category-level systematics summary for any number of variables.
 
@@ -885,6 +887,11 @@ def plot_syst_category_breakdown(
     xsec : bool, default False
         If True, plot uncertainties on the cross section (``xsec_syst_df``)
         instead of the event rate (``rate_syst_df``).
+    show_cv : bool, default True
+        If True, overlay the predicted event-rate histogram on a twin y-axis
+        (right) as a semi-transparent filled band.
+    projected_pot : float, default 1e20
+        POT used to scale the CV histogram to predicted event counts.
 
     Returns
     -------
@@ -911,8 +918,23 @@ def plot_syst_category_breakdown(
             if not syst_output.has_xsec:
                 raise ValueError("SystematicsOutput does not contain xsec results; recompute with xsec_inputs set.")
             syst_df = syst_output.xsec_syst_df
+            cv_hist = np.asarray(syst_output.xsec_hist_cv)
         else:
             syst_df = syst_output.rate_syst_df
+            cv_hist = np.asarray(syst_output.rate_hist_cv)
+
+        if show_cv:
+            plt.subplots_adjust(wspace=0.5)
+            flux_scale = integrated_flux * (projected_pot / 1e6)
+            cv_counts = cv_hist * flux_scale
+            ax_cv = ax.twinx()
+            ax_cv.stairs(cv_counts, bins, fill=True, alpha=0.25, color='steelblue', lw=0)
+            ax_cv.set_ylim(bottom=0, top=np.max(cv_counts) * 1.25)
+            pot_label = f"{projected_pot:.0e}".replace("e+", "e").replace("e0", "e")
+            ax_cv.set_ylabel(f"Predicted Events ({pot_label} POT)", color='steelblue', alpha=0.7, fontsize=10)
+            ax_cv.tick_params(axis='y', labelcolor='steelblue')
+            ax_cv.set_zorder(ax.get_zorder() - 1)
+            ax.set_facecolor('none')
 
         cat    = syst_df.sort_values('unc_norm').groupby('category')['unc_diag'].apply(_combine_syst_uncertainties)
         sums   = syst_df.groupby('category')['unc_norm'].apply(lambda s: float(np.sqrt(np.sum(s**2))))
