@@ -759,10 +759,11 @@ def plot_detvar(
     bins: np.ndarray,
     figsize: tuple[int, int] = (5, 5),
     xlabel: str = "",
-    ylabel: str = "Events / POT",
+    ylabel: str = "Events",
     ratio_min: float = 0.5,
     ratio_max: float = 1.5,
     internal: bool = True,
+    bin_labels: list[str] | None = None,
 ) -> tuple[plt.Figure, plt.Axes, plt.Axes]:
     """Compare DV and CV histograms for one detector variation entry.
 
@@ -777,12 +778,14 @@ def plot_detvar(
         Column to histogram.
     bins : np.ndarray
         Bin edges.
-    figsize : tuple, default (7, 5)
+    figsize : tuple, default (5, 5)
     xlabel : str, optional
         x-axis label placed on the ratio panel.
-    ylabel : str, default "Events / POT"
+    ylabel : str, default "Events"
     ratio_min, ratio_max : float, default (0.5, 1.5)
         y-axis limits for the DV/CV ratio subplot.
+    bin_labels : list of str, optional
+        Custom tick labels placed at each bin edge on the ratio panel.
 
     Returns
     -------
@@ -794,15 +797,13 @@ def plot_detvar(
     """
     entry  = detvar_dict[key]
     cv_df  = ensure_lexsorted(entry['cv_df'], axis=1)
-    pot    = entry['pot']
-    norm   = integrated_flux * (pot / 1e6)
 
-    cv_hist = get_hist1d(data=cv_df[var], bins=bins) / norm
+    cv_hist = get_hist1d(data=cv_df[var], bins=bins)
 
     dv_entry = entry['dv_df']
     dv_dfs   = dv_entry if isinstance(dv_entry, list) else [dv_entry]
     dv_hists = [
-        get_hist1d(data=ensure_lexsorted(dv, axis=1)[var], bins=bins) / norm
+        get_hist1d(data=ensure_lexsorted(dv, axis=1)[var], bins=bins)
         for dv in dv_dfs
     ]
 
@@ -814,7 +815,7 @@ def plot_detvar(
     ax_main.stairs(cv_hist, bins, color='black', lw=1.5, label='CV')
     colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
     for i, dv_hist in enumerate(dv_hists):
-        label = f'DV {i}' if len(dv_hists) > 1 else key
+        label = f'DV {i}' if len(dv_hists) > 1 else 'DV'
         color = colors[i % len(colors)]
         ax_main.stairs(dv_hist, bins, color=color, lw=1.5, linestyle='--', label=label)
         with np.errstate(invalid='ignore', divide='ignore'):
@@ -833,9 +834,17 @@ def plot_detvar(
     ax_main.set_ylabel(ylabel)
     ax_main.set_title(key)
     ax_main.legend()
-    ax_main.xaxis.set_minor_locator(_clipped_minor_locator(bins[0], bins[-1]))
-    ax_ratio.xaxis.set_minor_locator(_clipped_minor_locator(bins[0], bins[-1]))
     annotate_sbnd(ax_main, internal=internal)
+
+    if bin_labels is not None:
+        ax_main.set_xticks(bins)
+        ax_main.set_xticklabels(bin_labels)
+        ax_main.xaxis.set_minor_locator(mpl.ticker.NullLocator())
+        ax_ratio.set_xticks(bins)
+        ax_ratio.set_xticklabels(bin_labels)
+    else:
+        ax_main.xaxis.set_minor_locator(_clipped_minor_locator(bins[0], bins[-1]))
+        ax_ratio.xaxis.set_minor_locator(_clipped_minor_locator(bins[0], bins[-1]))
 
     return fig, ax_main, ax_ratio
 
