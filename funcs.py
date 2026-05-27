@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 from dataclasses import replace
 
-from .utils import ensure_lexsorted, apply_event_mask
+from .utils import ensure_lexsorted, apply_event_mask, flux_pot_weights
 from .io import load_dfs
 from .selection import select
 from .selection import select_sideband
@@ -356,20 +356,23 @@ def get_intime_cov(selected_df, var, bins,
     else:
         mcint_df = select(mcint_df, savedict=False, cuts=cuts, **select_kwargs)
 
-    mcint_df[('flux_pot_norm', '', '', '', '', '')] = scale / (integrated_flux * (mcbnb_pot / 1e6))
     selected_df = apply_event_mask(ensure_lexsorted(selected_df, axis=1), event_type)
     mcint_df = apply_event_mask(ensure_lexsorted(mcint_df, axis=1))
 
-    rate_hist_cv = get_hist1d(data=selected_df[var], bins=bins, weights=selected_df.flux_pot_norm)
+    selected_fpw = flux_pot_weights(selected_df, mcbnb_pot, integrated_flux)
+    mcint_fpw    = np.full(len(mcint_df), scale / (integrated_flux * (mcbnb_pot / 1e6)))
 
-    selected_no_offbeam_df = selected_df[selected_df.signal != signal_dict['offbeam']]
+    rate_hist_cv = get_hist1d(data=selected_df[var], bins=bins, weights=selected_fpw)
+
+    offbeam_mask = selected_df.signal.values != signal_dict['offbeam']
+    selected_no_offbeam_df = selected_df[offbeam_mask]
     rate_hist_cv_removed = get_hist1d(
         data=selected_no_offbeam_df[var],
         bins=bins,
-        weights=selected_no_offbeam_df.flux_pot_norm,
+        weights=selected_fpw[offbeam_mask],
     )
 
-    int_hist = get_hist1d(data=mcint_df[var], bins=bins, weights=mcint_df.flux_pot_norm)
+    int_hist = get_hist1d(data=mcint_df[var], bins=bins, weights=mcint_fpw)
     dv_hist = rate_hist_cv_removed + int_hist
 
     matrices = calc_matrices(dv_hist.reshape(len(bins) - 1, -1), rate_hist_cv)
@@ -510,9 +513,10 @@ def get_total_cov(reco_df, reco_var, bins, mcbnb_pot,
 
     # Common selected sample and CV histogram used by all covariance terms.
     sorted_df = apply_event_mask(ensure_lexsorted(reco_df, axis=1), event_type)
-    rate_hist_cv = get_hist1d(data=sorted_df[reco_var], weights=sorted_df.flux_pot_norm, bins=bins)
+    _fpw = flux_pot_weights(sorted_df, mcbnb_pot, integrated_flux)
+    rate_hist_cv = get_hist1d(data=sorted_df[reco_var], weights=_fpw, bins=bins)
     signal_mask = sorted_df.signal==0
-    xsec_hist_cv = get_hist1d(data=sorted_df[signal_mask][reco_var],weights=sorted_df[signal_mask].flux_pot_norm, bins=bins)
+    xsec_hist_cv = get_hist1d(data=sorted_df[signal_mask][reco_var], weights=_fpw[signal_mask], bins=bins)
 
     empty_syst_df = pd.DataFrame(columns=["key", "category", "unc", "sum", "top5"])
 
@@ -530,7 +534,7 @@ def get_total_cov(reco_df, reco_var, bins, mcbnb_pot,
     # 2) Rate systematics (non-detvar)
     # -----------------------------
     if include_rate:
-        rate_syst_dict = get_syst(reco_df=sorted_df, reco_var=reco_var, bins=bins)
+        rate_syst_dict = get_syst(reco_df=sorted_df, reco_var=reco_var, bins=bins, mcbnb_pot=mcbnb_pot)
         rate_total_syst_dict.update(rate_syst_dict)
         rate_total_cov += _sum_covariances_from_dicts([rate_syst_dict], rate_hist_cv.size)
         rate_syst_frames.append(get_syst_df([rate_syst_dict], rate_hist_cv))
@@ -539,7 +543,7 @@ def get_total_cov(reco_df, reco_var, bins, mcbnb_pot,
     # 3) XSec systematics (optional, non-detvar)
     # -----------------------------
     if include_xsec:
-        xsec_syst_dict = get_syst(reco_df=sorted_df, reco_var=reco_var, bins=bins, xsec_inputs=xsec_inputs)
+        xsec_syst_dict = get_syst(reco_df=sorted_df, reco_var=reco_var, bins=bins, mcbnb_pot=mcbnb_pot, xsec_inputs=xsec_inputs)
         xsec_total_syst_dict.update(xsec_syst_dict)
         xsec_total_cov += _sum_covariances_from_dicts([xsec_syst_dict], rate_hist_cv.size)
         xsec_syst_frames.append(get_syst_df([xsec_syst_dict], xsec_hist_cv))
@@ -593,6 +597,7 @@ def get_total_cov(reco_df, reco_var, bins, mcbnb_pot,
             rate_cov=rate_total_cov,
             rate_syst_df=rate_syst_df,
             rate_syst_dict=rate_total_syst_dict,
+            mcbnb_pot=mcbnb_pot,
         )
         return _apply_norm_and_intime_uncertainties(
             base_output,
@@ -606,6 +611,7 @@ def get_total_cov(reco_df, reco_var, bins, mcbnb_pot,
         rate_cov=rate_total_cov,
         rate_syst_df=rate_syst_df,
         rate_syst_dict=rate_total_syst_dict,
+        mcbnb_pot=mcbnb_pot,
         xsec_hist_cv=xsec_hist_cv,
         xsec_cov=xsec_total_cov,
         xsec_syst_df=xsec_syst_df,

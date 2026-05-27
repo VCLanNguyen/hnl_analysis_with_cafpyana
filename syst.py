@@ -30,6 +30,7 @@ from .utils import ensure_lexsorted, apply_event_mask
 from .utils import get_hist1d, get_hist2d
 from .selection import select
 from .analysis import define_signal, integrated_flux
+from .utils import flux_pot_weights
 from .classes import XSecInputs
 from makedf.geniesyst import regen_systematics, ar23p_genie_systematics
     
@@ -178,6 +179,7 @@ def get_syst_hists(reco_df: pd.DataFrame,
                    reco_var: str | tuple,
                    bins: np.ndarray,
                    scale: bool = True,
+                   mcbnb_pot: float | None = None,
                    xsec_inputs: XSecInputs | None = None,
                    multisim_nuniv=100,
                    save_response: bool = False) -> tuple[dict, np.ndarray]:
@@ -212,10 +214,13 @@ def get_syst_hists(reco_df: pd.DataFrame,
                     break
             break
 
-    scaling = np.ones(reco_df.shape[0])
+    if scale and mcbnb_pot is not None:
+        scaling = flux_pot_weights(reco_df, mcbnb_pot, integrated_flux)
+    elif 'weights_mc' in reco_df.columns.get_level_values(0):
+        scaling = reco_df.weights_mc.values.ravel()
+    else:
+        scaling = np.ones(reco_df.shape[0])
     for col in reco_df.columns:
-        if ("flux_pot_norm" in col) and scale:
-            scaling = reco_df[col].values
         if "morph" in col:
             unisim_col.append(tuple(filter(None, col)))
         elif "ps1" in col:
@@ -224,9 +229,6 @@ def get_syst_hists(reco_df: pd.DataFrame,
             base = tuple(filter(None, col))[:univ_level]
             if base not in multisim_col:
                 multisim_col.append(base)
-
-    if np.array_equal(scaling, np.ones(reco_df.shape[0])) and scale:
-        print("No flux-averaged POT normalization found; flux normalization will be equal to one.")
 
     cv = get_hist1d(data=reco_df[reco_var], bins=bins, weights=scaling)
     nbins = len(bins)

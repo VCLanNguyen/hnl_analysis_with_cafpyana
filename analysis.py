@@ -53,7 +53,7 @@ __all__ = [
     # physical constants
     'RHO', 'N_A', 'M_AR', 'V_SBND', 'NTARGETS',
     # categories
-    'signal_categories', 'signal_dict',
+    'signal_categories', 'signal_categories_external', 'signal_dict',
     'generic_categories', 'generic_dict',
     'pdg_categories', 'pdg_dict',
     'mode_categories', 'mode_dict',
@@ -103,6 +103,18 @@ signal_categories = {
     "offbeam":     {"value": 9, "label": "offbeam",             "color": "lightgray"},
 }
 signal_dict = {k: v["value"] for k, v in signal_categories.items()}
+
+# Simplified category scheme for external plots.  Each entry carries "values" (a list of
+# signal_dict integers) rather than a single "value", so multiple internal categories are
+# folded into one stack without modifying the signal column on the dataframe.
+signal_categories_external = {
+    "nueCC":        {"values": [0],    "label": r"CC $\nu_e$",         "color": "C0"},
+    "numuCCpi0":    {"values": [1],    "label": r"CC $\nu_\mu\pi^0$",  "color": "C1"},
+    "NCpi0":        {"values": [2],    "label": r"NC $\nu\pi^0$",      "color": "C2"},
+    "other_nu":     {"values": [3,4,5],"label": r"other $\nu$",        "color": "C3"},
+    "nonFV_dirt":   {"values": [6,7],  "label": r"non-FV $\nu$",       "color": "C5"},
+    "cosmic_bkg":   {"values": [8,9],  "label": "cosmic",              "color": "darkgray"},
+}
 
 generic_categories = {
     "CCnu":   {"value": 0, "label": r"CC $\nu$",     "color": "C3"},

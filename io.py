@@ -79,13 +79,16 @@ def load_mc(
     keys: list | None = None,
     cuts=None,
     max_splits: int | None = None,
+    chunk_splits: int = 1,
     add_pi0: bool = False,
+    excl_mc_df=None,
 ) -> tuple:
     """Load, preprocess, and optionally select an MC HDF5 file in chunks.
 
-    Each split is loaded independently to keep peak memory low.  POT and
-    generated-event counts are accumulated across all splits.  Header
-    columns (run/subrun/event) are merged into the output DataFrame.
+    Splits are loaded in batches of chunk_splits to balance memory and I/O
+    overhead.  POT and generated-event counts are accumulated across all
+    splits.  Header columns (run/subrun/event) are merged into the output
+    DataFrame.
 
     Parameters
     ----------
@@ -99,9 +102,18 @@ def load_mc(
         When None the full preprocessed DataFrame is returned.
     max_splits : int, optional
         Cap on the number of splits to load.  Defaults to all splits.
+    chunk_splits : int, default 1
+        Number of splits to load per iteration.  Increase to reduce I/O
+        overhead at the cost of higher peak memory per chunk.
     add_pi0 : bool, default False
         If True, compute pi0 kinematics via :func:`~nueana.preprocess.add_pi0`
         for each chunk after preprocessing.
+    excl_mc_df : pd.DataFrame, optional
+        Exclusive mcnuecc DataFrame with ``define_signal`` already applied
+        (i.e. has a top-level ``signal`` column).  When provided,
+        :func:`~nueana.exclusive.remove_signal_overlap` is called on the
+        final concatenated result to strip events that are already covered
+        by the exclusive sample and would otherwise be double-counted.
 
     Returns
     -------
@@ -128,14 +140,16 @@ def load_mc(
 
     n_total  = get_n_split(file)
     n_splits = min(max_splits, n_total) if max_splits is not None else n_total
-    iterator = _tqdm(range(n_splits)) if _tqdm is not None else range(n_splits)
+    starts   = range(0, n_splits, chunk_splits)
+    iterator = _tqdm(starts) if _tqdm is not None else starts
 
     pot    = 0.0
     ngen   = 0.0
     chunks = []
 
     for i in iterator:
-        dfs = load_dfs(file, keys2load=keys, n_max_concat=1, start_split=i)
+        n_load = min(chunk_splits, n_splits - i)
+        dfs = load_dfs(file, keys2load=keys, n_max_concat=n_load, start_split=i)
 
         if 'histpotdf' in dfs:    pot  += dfs['histpotdf'].TotalPOT.sum()
         elif 'hdr' in dfs:        pot  += dfs['hdr'].pot.sum()
@@ -153,7 +167,11 @@ def load_mc(
         del chunk
         gc.collect()
 
-    return pd.concat(chunks, ignore_index=False).copy(), pot, ngen
+    result = pd.concat(chunks, ignore_index=False).copy()
+    if excl_mc_df is not None:
+        from .exclusive import remove_signal_overlap
+        result = remove_signal_overlap(result, excl_mc_df)
+    return result, pot, ngen
 
 
 def load_data(

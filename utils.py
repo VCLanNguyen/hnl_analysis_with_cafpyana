@@ -5,7 +5,7 @@ from pyanalib.pandas_helpers import *
 
 from . import config
 
-__all__ = ['ensure_lexsorted', 'merge_hdr', 'apply_event_mask', 'get_hist1d', 'get_hist2d']
+__all__ = ['ensure_lexsorted', 'merge_hdr', 'apply_event_mask', 'get_hist1d', 'get_hist2d', 'flux_pot_weights']
 
 def ensure_lexsorted(frame, axis):
     """Ensure DataFrame axes are fully lexsorted when using MultiIndex.
@@ -109,6 +109,25 @@ def apply_event_mask(df: pd.DataFrame, event_mask: str | None = None) -> pd.Data
 # ---------------------------------------------------------------------------
 # Histogram utilities
 # ---------------------------------------------------------------------------
+
+def flux_pot_weights(df: pd.DataFrame, mcbnb_pot: float, integrated_flux: float) -> np.ndarray:
+    """Return flux+POT normalized per-event weights from ``weights_mc``.
+
+    Equivalent to the per-row formula::
+
+        flux_pot_norm = weights_mc / (integrated_flux * mcbnb_pot / 1e6)
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        DataFrame carrying a ``weights_mc`` column.
+    mcbnb_pot : float
+        Reference BNB POT for the sample.
+    integrated_flux : float
+        Integrated nue flux in cm⁻² (from :data:`nueana.analysis.integrated_flux`).
+    """
+    return df.weights_mc.values / (integrated_flux * (mcbnb_pot / 1e6))
+
 
 def get_hist1d(weights=None, data=None, bins=None, overflow=True, **kwargs):
     """1D histogram with optional overflow handling.

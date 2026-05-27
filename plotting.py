@@ -24,7 +24,7 @@ except Exception:
     chi2_dist = None
 
 __all__ = [
-    'annotate_internal',
+    'annotate_sbnd',
     'plot_var',
     'plot_var_pdg',
     'data_plot_overlay',
@@ -34,7 +34,7 @@ __all__ = [
     'plot_syst_breakdown',
 ]
 
-from .analysis import (signal_dict, signal_categories,
+from .analysis import (signal_dict, signal_categories, signal_categories_external,
                        generic_dict, generic_categories,
                        pdg_categories,
                        mode_dict, mode_categories,
@@ -44,9 +44,28 @@ from .syst import get_syst
 from .utils import get_hist1d
 from .classes import PlottingConfig, VariableConfig, SystematicsInput, SystematicsOutput
 
-def annotate_internal(ax):
-    """Stamp 'SBND Internal' in the upper-left and the tune label in the upper-right of *ax*."""
-    ax.annotate("SBND Internal", xy=(0.0, 1.02), xycoords='axes fraction', ha='left', color='gray', fontweight='bold')
+def _clipped_minor_locator(xmin, xmax):
+    """AutoMinorLocator whose ticks are clipped to [xmin, xmax].
+
+    Keeps the visual axis margin intact while preventing minor ticks
+    from appearing in the margin area outside the data range.
+    """
+    class _L(mpl.ticker.AutoMinorLocator):
+        def __call__(self):
+            locs = super().__call__()
+            return locs[(locs >= xmin) & (locs <= xmax)]
+    return _L()
+
+def annotate_sbnd(ax, internal=True):
+    """Stamp a status label in the upper-left and the tune label in the upper-right of *ax*.
+
+    Parameters
+    ----------
+    internal : bool, default True
+        If True, stamp "SBND Internal". If False, stamp "SBND Analysis In Progress".
+    """
+    label = "SBND Internal" if internal else "SBND Analysis In Progress"
+    ax.annotate(label, xy=(0.0, 1.02), xycoords='axes fraction', ha='left', color='gray', fontweight='bold')
     ax.annotate("GENIE v3.40 AR23_00i_00_000", xy=(1.0, 1.02), xycoords='axes fraction', ha='right', color='gray')
 
 def plot_var(df: pd.DataFrame,
@@ -61,11 +80,12 @@ def plot_var(df: pd.DataFrame,
     Category mode is controlled by ``generic``, ``pdg``, and ``mode`` (checked in
     that priority order):
 
-    - default (all False): stack by interaction type (``signal_categories``).
+    - default: stack by interaction type (``signal_categories``).
+    - ``categories=<dict>``: use any custom category dict, including ``generic_categories``,
+      ``signal_categories_external``, or a user-defined scheme. Entries may carry either
+      ``"value"`` (int) or ``"values"`` (list of ints) for multi-signal-type merging.
     - ``pdg=True``: stack by leading-particle PDG code (``pdg_categories``).
     - ``mode=True``: stack by GENIE interaction mode (``mode_categories``).
-    - ``generic=True``: stack by broad class — CC nu, NC nu, non-FV, dirt, cosmic
-      (``generic_categories``).
 
     Parameters
     ----------
@@ -101,16 +121,17 @@ def plot_var(df: pd.DataFrame,
         x-values at which to draw vertical dashed cut lines.
     plot_err : bool, default True
         If True, draw MC error bands (stat and/or syst).
-    systs : True | np.ndarray | SystematicsInput | None, default None
+    systs : True | SystematicsInput | SystematicsOutput | None, default None
         Controls how uncertainties are computed and displayed:
 
         - ``True``: read universe columns from ``df`` via :func:`~nueana.syst.get_syst`.
           If an MCstat universe is present the combined stat+syst band is drawn; otherwise
           stat and syst bands are drawn separately.
-        - ``np.ndarray``: treat as a pre-computed ``(n_bins, n_bins)`` total covariance
-          matrix (stat already included). A single combined band is drawn.
         - :class:`~nueana.classes.SystematicsInput`: call :func:`~nueana.funcs.get_total_cov`
           on-the-fly with the bundled parameters and use the resulting ``rate_cov``.
+        - :class:`~nueana.classes.SystematicsOutput`: use a pre-computed result from
+          :func:`~nueana.funcs.get_total_cov`. The POT is read from
+          ``systs.mcbnb_pot`` (set automatically by :func:`~nueana.funcs.get_total_cov`).
         - ``None`` (default): MC stat error only (diagonal, sum-of-weights-squared).
     pdg : bool, default False
         Stack by PDG code rather than signal type.
@@ -125,8 +146,9 @@ def plot_var(df: pd.DataFrame,
         Hatch pattern per category (must match number of categories).
     bin_labels : list of str, optional
         Custom tick labels placed at each bin edge.
-    generic : bool, default False
-        Stack by broad category (CC nu, NC nu, non-FV, dirt, cosmic).
+    categories : dict, optional
+        Custom category dict passed directly; takes priority over all flags.
+        Use ``generic_categories`` here for the broad CC/NC/non-FV/dirt/cosmic view.
     overflow : bool, default True
         If True, fold values above ``bins[-1]`` into the last bin.
     legend_kwargs : dict, optional
@@ -165,9 +187,10 @@ def plot_var(df: pd.DataFrame,
     mode_col      = _p.get('mode_col', ('slc', 'truth', 'genie_mode'))
     hatch         = _p.get('hatch', None)
     bin_labels    = _p.get('bin_labels', None)
-    generic       = _p.get('generic', False)
     overflow      = _p.get('overflow', True)
     legend_kwargs = _p.get('legend_kwargs', None)
+    internal      = _p.get('internal', True)
+    custom_cats   = _p.get('categories', None)
     if isinstance(df, pd.DataFrame):
         df = ensure_lexsorted(df, axis=0)
         df = ensure_lexsorted(df, axis=1)
@@ -179,10 +202,10 @@ def plot_var(df: pd.DataFrame,
           break
     
     if ax is None: ax = plt.gca()
-    if generic:   categories = generic_categories
-    elif pdg:     categories = pdg_categories
-    elif mode:    categories = mode_categories
-    else:         categories = signal_categories
+    if custom_cats is not None: categories = custom_cats
+    elif pdg:      categories = pdg_categories
+    elif mode:     categories = mode_categories
+    else:          categories = signal_categories
     ncategories = len(categories)
     if hatch == None: hatch = [""]*ncategories
     alpha = 0.25 if pdg else 0.4
@@ -198,9 +221,10 @@ def plot_var(df: pd.DataFrame,
 
     if (pdg==False) & (mode==False):
         for i, (key, entry) in enumerate(categories.items()):
-            this_cat = entry["value"]
-            hists[i] = get_hist1d(data=df[df.signal==this_cat][var],
-                                  weights=df[df.signal==this_cat]['weights_mc'] if weight else None,
+            vals = entry["values"] if "values" in entry else [entry["value"]]
+            mask = df.signal.isin(vals)
+            hists[i] = get_hist1d(data=df[mask][var],
+                                  weights=df[mask]['weights_mc'] if weight else None,
                                   bins=bins, overflow=overflow)
             
     elif mode:
@@ -283,38 +307,41 @@ def plot_var(df: pd.DataFrame,
     hist_counts = np.sum(hists,axis=1)
 
     # --- Systematics ---
-    # Three cases, resolved before the plot loop:
-    #   2D array  → caller provides the full (stat+syst) covariance; stat is included.
-    #   True      → inherit universe columns from df; detect whether MCstat is present.
-    #   None/else → no systematics; only MC stat error is shown.
-    systs_is_array = isinstance(systs, np.ndarray)
+    # Four cases, resolved before the plot loop:
+    #   SystematicsInput  → call get_total_cov on-the-fly; MCstat folded in.
+    #   SystematicsOutput → use pre-computed get_total_cov result; MCstat folded in.
+    #   True              → read universe columns from df; MCstat separate if no MCstat universe.
+    #   None/else         → MC stat error only.
+    _mcstat_err_annot = None  # populated in SystematicsInput/Output blocks when MCstat key present
 
-    if systs_is_array:
-        # Case 2: full covariance supplied by caller — must be exactly 2D.
-        if systs.ndim != 2 or systs.shape != (len(bins)-1, len(bins)-1):
-            raise ValueError(
-                "systs must be a 2D covariance matrix of shape "
-                f"({len(bins)-1}, {len(bins)-1}); got {systs.shape}"
-            )
-        total_cov = np.array(systs, dtype=float, copy=True)
-        systs_arr = np.sqrt(np.clip(np.diag(total_cov), a_min=0.0, a_max=None))
-        syst_dict = {}
-        calc_separate_mcstat = False
+    def _apply_syst_output(output, hist_scale):
+        """Shared logic for SystematicsInput and SystematicsOutput paths."""
+        nonlocal _mcstat_err_annot
+        _total_cov = np.array(output.rate_cov, dtype=float, copy=True) * hist_scale**2
+        _systs_arr = np.sqrt(np.clip(np.diag(_total_cov), a_min=0.0, a_max=None))
+        _syst_dict = dict(output.rate_syst_dict)
+        _mcstat_key = next((k for k in _syst_dict if str(k).lower() == 'mcstat'), None)
+        _calc_sep   = _mcstat_key is None
+        if _mcstat_key is not None:
+            _mcstat_err_annot = np.sqrt(np.diag(_syst_dict[_mcstat_key]['cov'] * hist_scale**2)) * scale
+        return _total_cov, _systs_arr, _syst_dict, _calc_sep
 
-    elif isinstance(systs, SystematicsInput) or type(systs).__name__ == 'SystematicsInput':
-        # Case 4: call get_total_cov on-the-fly with the bundled parameters.
+    if isinstance(systs, SystematicsInput) or type(systs).__name__ == 'SystematicsInput':
+        # Case 1: call get_total_cov on-the-fly with the bundled parameters.
         from .funcs import get_total_cov
         _output = get_total_cov(reco_df=df, reco_var=var, bins=bins, **systs.to_kwargs())
-        total_cov = np.array(_output.rate_cov, dtype=float, copy=True)
-        # get_total_cov returns the covariance on the flux-normalized rates
-        # want to obtain the covariance on the MC histogram counts before scaling by POT and flux
-        total_cov *= (integrated_flux * (systs.mcbnb_pot/1e6))**2
-        systs_arr = np.sqrt(np.clip(np.diag(total_cov), a_min=0.0, a_max=None))
-        syst_dict = dict(_output.rate_syst_dict)
-        calc_separate_mcstat = not any(str(k).lower() == 'mcstat' for k in syst_dict)
+        _hist_scale = integrated_flux * (systs.mcbnb_pot/1e6)
+        total_cov, systs_arr, syst_dict, calc_separate_mcstat = _apply_syst_output(_output, _hist_scale)
+
+    elif isinstance(systs, SystematicsOutput) or type(systs).__name__ == 'SystematicsOutput':
+        # Case 2: caller already ran get_total_cov and passes the result directly.
+        if systs.mcbnb_pot is None:
+            raise ValueError("SystematicsOutput.mcbnb_pot is not set; use get_total_cov to produce it")
+        _hist_scale = integrated_flux * (systs.mcbnb_pot/1e6)
+        total_cov, systs_arr, syst_dict, calc_separate_mcstat = _apply_syst_output(systs, _hist_scale)
 
     elif systs is True:
-        # Case 1: inherit systematics from universe columns in the dataframe.
+        # Case 3: inherit systematics from universe columns in the dataframe.
         found_systs = any("univ_" in "_".join(list(col)) for col in df.columns)
         if not found_systs:
             print("systs=True but no universe columns found; computing stat error only")
@@ -330,7 +357,7 @@ def plot_var(df: pd.DataFrame,
             calc_separate_mcstat = not has_mcstat
 
     else:
-        # Case 3: systs=None — no systematics; only MC stat error is shown.
+        # Case 4: systs=None — no systematics; only MC stat error is shown.
         syst_dict = {}
         systs_arr = np.zeros(len(bins)-1)
         calc_separate_mcstat = True
@@ -384,20 +411,17 @@ def plot_var(df: pd.DataFrame,
         _systs = np.append(systs_err[0], systs_err)
         _stats = np.append(stats_err[0], stats_err)
 
-        if has_systs and not calc_separate_mcstat:
-            # Cases 2 and 1+mcstat: stat is already folded into the covariance → combined band.
+        if has_systs:
+            # Always combine stat and syst in quadrature into a single band.
+            # When MCstat is folded into the covariance (SystematicsInput/Output),
+            # stats_err is zero so combined reduces to systs_err unchanged.
+            combined_err = np.sqrt(systs_err**2 + stats_err**2)
+            _combined = np.append(combined_err[0], combined_err)
             ax.fill_between(bins,
-                            steps[-1] - _systs, steps[-1] + _systs,
+                            steps[-1] - _combined, steps[-1] + _combined,
                             **systs_options, label="MC stat.+syst.")
-        elif has_systs and calc_separate_mcstat:
-            # Case 1 without mcstat: draw syst and stat bands separately.
-            min_syst = steps[-1] - _systs
-            pls_syst = steps[-1] + _systs
-            ax.fill_between(bins, min_syst, pls_syst, **systs_options, label="MC syst.")
-            ax.fill_between(bins, min_syst - _stats, min_syst, **stats_options, label="MC stat.")
-            ax.fill_between(bins, pls_syst, pls_syst + _stats, **stats_options)
         else:
-            # Case 3: no systematics — stat error only.
+            # systs=None — stat error only.
             ax.fill_between(bins,
                             steps[-1] - _stats, steps[-1] + _stats,
                             **stats_options, label="MC stat.")
@@ -408,17 +432,25 @@ def plot_var(df: pd.DataFrame,
             ax.axvline(cut_val[i],lw=2,color="gray",linestyle="--",zorder=cut_line_zorder)
     
     total_err = np.sqrt(np.clip(np.diag(total_cov), a_min=0.0, a_max=None))
-    syst_dict['__total_cov__'] = total_cov
+    syst_dict['__total_cov__']        = total_cov
+    syst_dict['__stats_err__']        = stats_err
+    syst_dict['__systs_err__']        = systs_err
+    syst_dict['__separate_errors__']  = calc_separate_mcstat
+    # MCstat for annotation: from the SystematicsInput path if available, else stats_err.
+    syst_dict['__mcstat_err__']       = _mcstat_err_annot if _mcstat_err_annot is not None else stats_err
 
-    ax.set_xlabel('_'.join(var)) if xlabel == "" else ax.set_xlabel(xlabel)
-    ax.set_ylabel("Counts")      if ylabel == "" else ax.set_ylabel(ylabel)
-    ax.set_title ('_'.join(var)) if title  == "" else ax.set_title (title)
-    annotate_internal(ax)
+    _var_str = var if isinstance(var, str) else '_'.join(var)
+    ax.set_xlabel(_var_str) if xlabel == "" else ax.set_xlabel(xlabel, fontsize=12)
+    ax.set_ylabel("Counts") if ylabel == "" else ax.set_ylabel(ylabel, fontsize=12)
+    ax.set_title (_var_str) if title  == "" else ax.set_title (title)
+    annotate_sbnd(ax, internal=internal)
     
     if bin_labels is not None:
         ax.set_xticks(bins)
         ax.set_xticklabels(bin_labels)
-    
+    else:
+        ax.xaxis.set_minor_locator(_clipped_minor_locator(bins[0], bins[-1]))
+
     # Apply legend with custom kwargs
     default_legend_kwargs = {'ncol': 2, 'loc': 'upper right'}
     if legend_kwargs:
@@ -500,6 +532,7 @@ def plot_mc_data(mc_df: pd.DataFrame,
                  ratio_min: float = 0.0,
                  ratio_max: float = 2.0,
                  annot: bool = True,
+                 data_first: bool = True,
                  savefig: str = "",
                  config: PlottingConfig | None = None,
                  **kwargs) -> tuple[plt.Figure, plt.Axes, plt.Axes]:
@@ -548,12 +581,13 @@ def plot_mc_data(mc_df: pd.DataFrame,
     """
     _p = {f.name: getattr(config, f.name) for f in _dc_fields(config)} if config is not None else {}
     _p.update(kwargs)
-    ratio_min = _p.get('ratio_min', ratio_min)
-    ratio_max = _p.get('ratio_max', ratio_max)
+    ratio_min  = _p.get('ratio_min', ratio_min)
+    ratio_max  = _p.get('ratio_max', ratio_max)
+    data_first = _p.get('data_first', data_first)
     fig = plt.figure(figsize=figsize)
-    gs = GridSpec(2, 1, height_ratios=[6, 1], hspace=0.4)
+    gs = GridSpec(2, 1, height_ratios=[6, 1], hspace=0.05)
     ax_main = fig.add_subplot(gs[0])
-    ax_sub = fig.add_subplot(gs[1])
+    ax_sub = fig.add_subplot(gs[1], sharex=ax_main)
 
     data_args = dict(df=data_df, var=var, bins=bins, ax=ax_main, normalize=_p.get('normalize', False), overflow=_p.get('overflow', True))
     mc_args   = dict(df=mc_df, var=var, bins=bins, ax=ax_main, config=config, **kwargs)
@@ -584,16 +618,22 @@ def plot_mc_data(mc_df: pd.DataFrame,
         
     bin_centers = 0.5 * (mc_bins[1:] + mc_bins[:-1])
     
-    ax_sub.errorbar(bin_centers, ratio, yerr=ratio_err, fmt='s', markersize=3,color='black', zorder=1e3, label='data/MC ratio')
+    ax_sub.errorbar(bin_centers, ratio, yerr=ratio_err, fmt='s', markersize=3,color='black', zorder=1e3, label='Data/Pred ratio')
     # fill_between needs last entry to be repeated 
-    ax_sub.fill_between(mc_bins,ms_err, ps_err, step="pre", color=mpl.colors.to_rgba("gray", alpha=0.4), lw=0.0, label='MC err.')
+    ax_sub.fill_between(mc_bins,ms_err, ps_err, step="pre", color=mpl.colors.to_rgba("gray", alpha=0.4), lw=0.0, label='Pred err.')
     
     ax_sub.axhline(1, color='red', linestyle='--', linewidth=1, zorder=0,label="y=1.0")
     ax_sub.set_xlim(xmin, xmax)
     ax_sub.set_ylim(ratio_min, ratio_max)
-    ax_sub.set_ylabel("Data/MC")
-    ax_sub.legend(loc='upper center', bbox_to_anchor=(0.5, 1.5),
-                  ncol=3,fontsize='small',frameon=False)
+    ax_sub.set_ylabel("Data/Pred")
+    # Move xlabel to ratio panel and suppress top-panel x-axis tick labels.
+    ax_sub.set_xlabel(ax_main.get_xlabel(), fontsize=12)
+    ax_main.set_xlabel("")
+    plt.setp(ax_main.get_xticklabels(), visible=False)
+    ax_main.tick_params(axis='x', which='both', bottom=True, top=False)
+    # ax_sub.legend(loc='upper center', bbox_to_anchor=(0.5, 1.4),
+                #   ncol=3, fontsize='small', frameon=False)
+
     cut_val = _p.get('cut_val', None)
     if cut_val is not None:
         for cut in cut_val:
@@ -616,9 +656,18 @@ def plot_mc_data(mc_df: pd.DataFrame,
     # Integrated ratio uncertainty.
     # Cases 1 & 2: propagate full covariance — sigma_mc = sqrt(sum(mc_cov)) * R / total_mc.
     # Case 3: same formula, but mc_cov is diagonal so sum(mc_cov) = sum of stat variances.
-    total_ratio_mc_err   = np.sqrt(np.sum(mc_cov)) * (total_ratio / total_mc)
     total_ratio_data_err = np.sqrt(total_data) / total_mc
-    total_ratio_err      = np.sqrt(total_ratio_data_err**2 + total_ratio_mc_err**2)
+
+    # Separate stat (data + MC stat) from syst for the annotation.
+    # __mcstat_err__ always holds the per-bin MC stat regardless of how systematics were computed.
+    _mc_st = mc_dict.get('__mcstat_err__', mc_err) if isinstance(mc_dict, dict) else mc_err
+    mcstat_ratio_err     = np.sqrt(np.sum(_mc_st ** 2)) * (total_ratio / total_mc)
+    total_ratio_stat_err = np.sqrt(total_ratio_data_err**2 + mcstat_ratio_err**2)
+    syst_cov_sum         = max(0.0, np.sum(mc_cov) - np.sum(_mc_st ** 2))
+    total_ratio_syst_err = np.sqrt(syst_cov_sum) * (total_ratio / total_mc)
+
+    total_ratio_mc_err = np.sqrt(np.sum(mc_cov)) * (total_ratio / total_mc)
+    total_ratio_err    = np.sqrt(total_ratio_data_err**2 + total_ratio_mc_err**2)
 
     valid = np.isfinite(data_hist) & np.isfinite(mc_tot)
     ndf     = nbins
@@ -660,7 +709,7 @@ def plot_mc_data(mc_df: pd.DataFrame,
     ann_ha = 'right' if anchor_right else 'left'
 
     if annot:
-        ax_main.annotate(rf"$\Sigma$ Data/MC = {total_ratio:.2f} $\pm$ {total_ratio_err:.2f}",
+        ax_main.annotate(rf"$\Sigma$ Data/Pred = {total_ratio:.2f} $\pm$ {total_ratio_stat_err:.2f} (stat.) $\pm$ {total_ratio_syst_err:.2f} (syst.)",
                         xy=(ann_x, ann_y),
                         xycoords=ax_main.transAxes,
                         xytext=(0, -6),
@@ -676,10 +725,25 @@ def plot_mc_data(mc_df: pd.DataFrame,
 
     if bin_labels is not None:
         ax_main.set_xticks(bins)
-        ax_main.set_xticklabels(bin_labels)
+        plt.setp(ax_main.get_xticklabels(), visible=False)
+        ax_main.xaxis.set_minor_locator(mpl.ticker.NullLocator())
         ax_sub.set_xticks(bins)
         ax_sub.set_xticklabels(bin_labels)
-    annotate_internal(ax_main)
+    else:
+        ax_sub.xaxis.set_minor_locator(_clipped_minor_locator(mc_bins[0], mc_bins[-1]))
+    ax_sub.yaxis.set_minor_locator(mpl.ticker.AutoMinorLocator())
+
+
+    if data_first:
+        handles, labels = ax_main.get_legend_handles_labels()
+        idx = next((i for i, l in enumerate(labels) if l.startswith('data')), None)
+        if idx is not None and idx != 0:
+            order = [idx] + [i for i in range(len(labels)) if i != idx]
+            _leg_kw = {'ncol': 2, 'loc': 'upper right'}
+            _leg_kw.update(_p.get('legend_kwargs') or {})
+            ax_main.legend([handles[i] for i in order], [labels[i] for i in order], **_leg_kw)
+
+    annotate_sbnd(ax_main, internal=_p.get('internal', True))
 
     if savefig!="":
         plt.savefig(savefig,bbox_inches='tight')
@@ -697,6 +761,7 @@ def plot_detvar(
     ylabel: str = "Events / POT",
     ratio_min: float = 0.5,
     ratio_max: float = 1.5,
+    internal: bool = True,
 ) -> tuple[plt.Figure, plt.Axes, plt.Axes]:
     """Compare DV and CV histograms for one detector variation entry.
 
@@ -741,7 +806,7 @@ def plot_detvar(
     ]
 
     fig = plt.figure(figsize=figsize)
-    gs       = GridSpec(2, 1, height_ratios=[4, 1], hspace=0.35)
+    gs       = GridSpec(2, 1, height_ratios=[4, 1], hspace=0.15)
     ax_main  = fig.add_subplot(gs[0])
     ax_ratio = fig.add_subplot(gs[1])
 
@@ -759,7 +824,7 @@ def plot_detvar(
     ax_ratio.set_ylim(ratio_min, ratio_max)
     ax_ratio.set_ylabel("DV / CV")
     if xlabel:
-        ax_ratio.set_xlabel(xlabel)
+        ax_ratio.set_xlabel(xlabel,fontsize=12)
 
     xmin, xmax = ax_main.get_xlim()
     ax_ratio.set_xlim(xmin, xmax)
@@ -767,7 +832,9 @@ def plot_detvar(
     ax_main.set_ylabel(ylabel)
     ax_main.set_title(key)
     ax_main.legend()
-    annotate_internal(ax_main)
+    ax_main.xaxis.set_minor_locator(_clipped_minor_locator(bins[0], bins[-1]))
+    ax_ratio.xaxis.set_minor_locator(_clipped_minor_locator(bins[0], bins[-1]))
+    annotate_sbnd(ax_main, internal=internal)
 
     return fig, ax_main, ax_ratio
 
@@ -852,7 +919,7 @@ def plot_syst_category_breakdown(
         if tot.size:
             ax.stairs(tot * 100, bins, lw=2, color='black', label=f'Total ({total_sum:.1%})')
 
-        ax.set_xlabel(xlabel)
+        ax.set_xlabel(xlabel,fontsize=12)
         ax.set_ylabel("Uncertainty on the Event Rate [%]")
         ax.set_ylim(0, 35)
         ax.set_xticks(bins)

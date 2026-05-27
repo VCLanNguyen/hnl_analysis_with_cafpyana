@@ -100,6 +100,7 @@ class SystematicsOutput:
     rate_cov: np.ndarray
     rate_syst_df: pd.DataFrame
     rate_syst_dict: dict
+    mcbnb_pot: float | None = None
     xsec_hist_cv: np.ndarray | None = None
     xsec_cov: np.ndarray | None = None
     xsec_syst_df: pd.DataFrame | None = None
@@ -158,9 +159,14 @@ class SystematicsInput:
     detvar_dict: object = None
 
     def to_kwargs(self) -> dict:
-        """Return fields as a dict suitable for unpacking into get_total_cov."""
+        """Return fields as a dict suitable for unpacking into get_total_cov.
+
+        Fields whose value is None are omitted so that explicit keyword
+        arguments at the call site take precedence over the dataclass defaults.
+        """
         from dataclasses import fields
-        return {f.name: getattr(self, f.name) for f in fields(self)}
+        return {f.name: getattr(self, f.name) for f in fields(self)
+                if getattr(self, f.name) is not None}
 
 
 @dataclass
@@ -181,17 +187,19 @@ class PlottingConfig:
     mult_factor: float = 1.0
     cut_val: list[float] | None = None
     plot_err: bool = True
-    systs: bool | np.ndarray | SystematicsInput | None = None
+    systs: bool | SystematicsInput | SystematicsOutput | None = None
     pdg: bool = False
     pdg_col: tuple | str = 'pfp_shw_truth_p_pdg'
     mode: bool = False
     hatch: list[str] | None = None
     bin_labels: list[str] | None = None
-    generic: bool = False
     overflow: bool = True
     legend_kwargs: dict | None = None
     ratio_min: float = 0.0
     ratio_max: float = 2.0
+    data_first: bool = True
+    internal: bool = True
+    categories: dict | None = None
 
 
 __all__ = [

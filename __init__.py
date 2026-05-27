@@ -12,6 +12,7 @@ from . import classes
 from . import funcs
 from . import preprocess
 from . import detvar
+from . import exclusive
 
 from .utils import *
 from .io import *
@@ -23,6 +24,7 @@ from .classes import *
 from .funcs import *
 from .preprocess import *
 from .detvar import *
+from .exclusive import *
 
 # This allows both:
 # import nueana; nueana.cutPreselection(df)
