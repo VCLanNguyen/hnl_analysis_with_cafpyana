@@ -10,6 +10,7 @@ All functions accept plain and MultiIndex DataFrames. Style and display options 
 be bundled into a :class:`~nueana.classes.PlottingConfig` instance and passed as
 ``config``; keyword arguments take priority over the config.
 """
+from __future__ import annotations
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -66,7 +67,7 @@ def annotate_sbnd(ax, internal=True):
     """
     label = "SBND Internal" if internal else "SBND Analysis In Progress"
     ax.annotate(label, xy=(0.0, 1.02), xycoords='axes fraction', ha='left', color='gray', fontweight='bold')
-    ax.annotate("GENIE v3.40 AR23_00i_00_000", xy=(1.0, 1.02), xycoords='axes fraction', ha='right', color='gray')
+    # ax.annotate("GENIE v3.40 AR23_00i_00_000", xy=(1.0, 1.02), xycoords='axes fraction', ha='right', color='gray')
 
 def plot_var(df: pd.DataFrame,
              var: tuple | str,
@@ -756,12 +757,13 @@ def plot_detvar(
     key: str,
     var: str | tuple,
     bins: np.ndarray,
-    figsize: tuple[int, int] = (7, 5),
+    figsize: tuple[int, int] = (5, 5),
     xlabel: str = "",
-    ylabel: str = "Events / POT",
+    ylabel: str = "Events",
     ratio_min: float = 0.5,
     ratio_max: float = 1.5,
     internal: bool = True,
+    bin_labels: list[str] | None = None,
 ) -> tuple[plt.Figure, plt.Axes, plt.Axes]:
     """Compare DV and CV histograms for one detector variation entry.
 
@@ -776,12 +778,14 @@ def plot_detvar(
         Column to histogram.
     bins : np.ndarray
         Bin edges.
-    figsize : tuple, default (7, 5)
+    figsize : tuple, default (5, 5)
     xlabel : str, optional
         x-axis label placed on the ratio panel.
-    ylabel : str, default "Events / POT"
+    ylabel : str, default "Events"
     ratio_min, ratio_max : float, default (0.5, 1.5)
         y-axis limits for the DV/CV ratio subplot.
+    bin_labels : list of str, optional
+        Custom tick labels placed at each bin edge on the ratio panel.
 
     Returns
     -------
@@ -793,15 +797,13 @@ def plot_detvar(
     """
     entry  = detvar_dict[key]
     cv_df  = ensure_lexsorted(entry['cv_df'], axis=1)
-    pot    = entry['pot']
-    norm   = integrated_flux * (pot / 1e6)
 
-    cv_hist = get_hist1d(data=cv_df[var], bins=bins) / norm
+    cv_hist = get_hist1d(data=cv_df[var], bins=bins)
 
     dv_entry = entry['dv_df']
     dv_dfs   = dv_entry if isinstance(dv_entry, list) else [dv_entry]
     dv_hists = [
-        get_hist1d(data=ensure_lexsorted(dv, axis=1)[var], bins=bins) / norm
+        get_hist1d(data=ensure_lexsorted(dv, axis=1)[var], bins=bins)
         for dv in dv_dfs
     ]
 
@@ -813,7 +815,7 @@ def plot_detvar(
     ax_main.stairs(cv_hist, bins, color='black', lw=1.5, label='CV')
     colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
     for i, dv_hist in enumerate(dv_hists):
-        label = f'DV {i}' if len(dv_hists) > 1 else key
+        label = f'DV {i}' if len(dv_hists) > 1 else 'DV'
         color = colors[i % len(colors)]
         ax_main.stairs(dv_hist, bins, color=color, lw=1.5, linestyle='--', label=label)
         with np.errstate(invalid='ignore', divide='ignore'):
@@ -832,9 +834,17 @@ def plot_detvar(
     ax_main.set_ylabel(ylabel)
     ax_main.set_title(key)
     ax_main.legend()
-    ax_main.xaxis.set_minor_locator(_clipped_minor_locator(bins[0], bins[-1]))
-    ax_ratio.xaxis.set_minor_locator(_clipped_minor_locator(bins[0], bins[-1]))
     annotate_sbnd(ax_main, internal=internal)
+
+    if bin_labels is not None:
+        ax_main.set_xticks(bins)
+        ax_main.set_xticklabels(bin_labels)
+        ax_main.xaxis.set_minor_locator(mpl.ticker.NullLocator())
+        ax_ratio.set_xticks(bins)
+        ax_ratio.set_xticklabels(bin_labels)
+    else:
+        ax_main.xaxis.set_minor_locator(_clipped_minor_locator(bins[0], bins[-1]))
+        ax_ratio.xaxis.set_minor_locator(_clipped_minor_locator(bins[0], bins[-1]))
 
     return fig, ax_main, ax_ratio
 
@@ -847,7 +857,7 @@ def _combine_syst_uncertainties(syst_df: pd.DataFrame) -> np.ndarray:
     if isinstance(syst_df, pd.Series):
         unc_values = np.stack(syst_df.to_numpy())
     else:
-        unc_values = np.stack(syst_df['unc'].to_numpy())
+        unc_values = np.stack(syst_df['unc_diag'].to_numpy())
     return np.sqrt(np.sum(np.square(unc_values), axis=0))
 
 
@@ -856,6 +866,9 @@ def plot_syst_category_breakdown(
     category_dict: dict,
     region_label: str = "Signal Region",
     figsize: tuple[int, int] | None = None,
+    xsec: bool = False,
+    show_cv: bool = False,
+    projected_pot: float = 1e20,
 ) -> tuple[plt.Figure, np.ndarray, list, list]:
     """Plot the category-level systematics summary for any number of variables.
 
@@ -871,6 +884,14 @@ def plot_syst_category_breakdown(
         Text stamped in the corner of each subplot.
     figsize : tuple, optional
         Figure size. Defaults to ``(5 * n_vars, 4)``.
+    xsec : bool, default False
+        If True, plot uncertainties on the cross section (``xsec_syst_df``)
+        instead of the event rate (``rate_syst_df``).
+    show_cv : bool, default True
+        If True, overlay the predicted event-rate histogram on a twin y-axis
+        (right) as a semi-transparent filled band.
+    projected_pot : float, default 1e20
+        POT used to scale the CV histogram to predicted event counts.
 
     Returns
     -------
@@ -893,10 +914,30 @@ def plot_syst_category_breakdown(
     for ax, item in zip(axes, syst_vars):
         syst_output, bins, xlabel = item[0], item[1], item[2]
         bin_labels = item[3] if len(item) > 3 else None
-        syst_df = syst_output.rate_syst_df
+        if xsec:
+            if not syst_output.has_xsec:
+                raise ValueError("SystematicsOutput does not contain xsec results; recompute with xsec_inputs set.")
+            syst_df = syst_output.xsec_syst_df
+            cv_hist = np.asarray(syst_output.xsec_hist_cv)
+        else:
+            syst_df = syst_output.rate_syst_df
+            cv_hist = np.asarray(syst_output.rate_hist_cv)
 
-        cat    = syst_df.sort_values('sum').groupby('category')['unc'].apply(_combine_syst_uncertainties)
-        sums   = syst_df.groupby('category')['sum'].apply(lambda s: float(np.sqrt(np.sum(s**2))))
+        if show_cv:
+            plt.subplots_adjust(wspace=0.5)
+            flux_scale = integrated_flux * (projected_pot / 1e6)
+            cv_counts = cv_hist * flux_scale
+            ax_cv = ax.twinx()
+            ax_cv.stairs(cv_counts, bins, fill=True, alpha=0.25, color='steelblue', lw=0)
+            ax_cv.set_ylim(bottom=0, top=np.max(cv_counts) * 1.25)
+            pot_label = f"{projected_pot:.0e}".replace("e+", "e").replace("e0", "e")
+            ax_cv.set_ylabel(f"Predicted Events ({pot_label} POT)", color='steelblue', alpha=0.7, fontsize=10)
+            ax_cv.tick_params(axis='y', labelcolor='steelblue')
+            ax_cv.set_zorder(ax.get_zorder() - 1)
+            ax.set_facecolor('none')
+
+        cat    = syst_df.sort_values('unc_norm').groupby('category')['unc_diag'].apply(_combine_syst_uncertainties)
+        sums   = syst_df.groupby('category')['unc_norm'].apply(lambda s: float(np.sqrt(np.sum(s**2))))
         cats_per_var.append(cat)
         cat_sums_per_var.append(sums)
 
@@ -915,12 +956,13 @@ def plot_syst_category_breakdown(
             )
 
         tot = _combine_syst_uncertainties(syst_df)
-        total_sum = float(np.sqrt(np.sum(syst_df['sum'] ** 2)))
+        total_sum = float(np.sqrt(np.sum(syst_df['unc_norm'] ** 2)))
         if tot.size:
             ax.stairs(tot * 100, bins, lw=2, color='black', label=f'Total ({total_sum:.1%})')
 
         ax.set_xlabel(xlabel,fontsize=12)
-        ax.set_ylabel("Uncertainty on the Event Rate [%]")
+        _ylabel = "Uncertainty on the Cross Section [%]" if xsec else "Uncertainty on the Event Rate [%]"
+        ax.set_ylabel(_ylabel)
         ax.set_ylim(0, 35)
         ax.set_xticks(bins)
         if bin_labels is not None:
@@ -940,6 +982,7 @@ def plot_syst_breakdown(
     category_dict: dict,
     region_label: str | None = None,
     figsize: tuple[int, int] | None = None,
+    xsec: bool = False,
 ) -> tuple[plt.Figure, np.ndarray]:
     """Plot the per-source systematics breakdown for one category.
 
@@ -954,9 +997,12 @@ def plot_syst_breakdown(
     category_dict : dict
         Mapping of category name → style dict (``color``, ``label``, ``line``).
     region_label : str, optional
-        Text stamped in the corner of each subplot.
+        Text stamped in the corner ojf each subplot.
     figsize : tuple, optional
         Figure size. Defaults to ``(5 * n_vars, 4)``.
+    xsec : bool, default False
+        If True, plot uncertainties on the cross section (``xsec_syst_df``)
+        instead of the event rate (``rate_syst_df``).
 
     Returns
     -------
@@ -977,27 +1023,33 @@ def plot_syst_breakdown(
     for ax, item in zip(axes, syst_vars):
         syst_output, bins, xlabel = item[0], item[1], item[2]
         bin_labels = item[3] if len(item) > 3 else None
-        syst_df = syst_output.rate_syst_df
+        if xsec:
+            if not syst_output.has_xsec:
+                raise ValueError("SystematicsOutput does not contain xsec results; recompute with xsec_inputs set.")
+            syst_df = syst_output.xsec_syst_df
+        else:
+            syst_df = syst_output.rate_syst_df
 
-        this_df = syst_df[syst_df.category == category].sort_values('sum', ascending=False)
+        this_df = syst_df[syst_df.category == category].sort_values('unc_norm', ascending=False)
 
         for _, row in this_df.iterrows():
             ax.stairs(
-                row.unc * 100,
+                row.unc_diag * 100,
                 bins,
                 lw=1.5,
-                label=row.key + f" ({row['sum']:.1%})" if row.top5 else "",
+                label=row.key + f" ({row['unc_norm']:.1%})" if row.top5 else "",
                 alpha=0.5,
             )
 
         tot = _combine_syst_uncertainties(this_df)
-        tot_sum = float(np.sqrt(np.sum(this_df['sum'] ** 2)))
+        tot_sum = float(np.sqrt(np.sum(this_df['unc_norm'] ** 2)))
         if tot.size:
             ax.stairs(tot * 100, bins, lw=2, color=this_color,
                       label=f'Total {this_label} ({tot_sum:.1%})')
 
         ax.set_xlabel(xlabel)
-        ax.set_ylabel("Uncertainty on the Event Rate [%]")
+        _ylabel = "Uncertainty on the Cross Section [%]" if xsec else "Uncertainty on the Event Rate [%]"
+        ax.set_ylabel(_ylabel)
         ax.set_ylim(0, 35)
         ax.set_xticks(bins)
         if bin_labels is not None:

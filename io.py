@@ -1,4 +1,6 @@
 """File input/output utilities for loading HDF5 data files."""
+from __future__ import annotations
+
 import gc
 
 import numpy as np
@@ -219,7 +221,6 @@ def load_data(
     dfs = load_dfs(file, keys2load=keys)
     df  = merge_hdr(dfs['hdr'], dfs['nuecc'])
     df  = preprocess_data(df)
-    df  = add_pi0(df)
 
     pot    = 0.0
     ngates = 0.0

@@ -19,6 +19,7 @@ Usage
         outfile   = 'mc_nuecc_merged.df',
     )
 """
+from __future__ import annotations
 
 import warnings
 

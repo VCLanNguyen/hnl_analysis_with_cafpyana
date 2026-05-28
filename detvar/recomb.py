@@ -39,6 +39,7 @@ Usage
         cv_map  = {name: 'cv' for name in dv_files},
     )
 """
+from __future__ import annotations
 
 import numpy as np
 import pandas as pd

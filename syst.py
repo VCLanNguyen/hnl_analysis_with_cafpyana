@@ -8,6 +8,7 @@ Functions that support disabling this accept a `scale=True` parameter.
 - Covariance matrices are normalized by N_universes.
 - NaN weights (e.g., GENIE weights for true cosmics) are replaced with 1.0.
 """
+from __future__ import annotations
 
 import numpy as np
 import pandas as pd
@@ -27,7 +28,7 @@ __all__ = [
     'slim_multisim_weights',
 ]
 from .utils import ensure_lexsorted, apply_event_mask
-from .utils import get_hist1d, get_hist2d
+from .utils import get_hist1d, get_hist2d, digitize_with_overflow
 from .selection import select
 from .analysis import define_signal, integrated_flux
 from .utils import flux_pot_weights
@@ -99,6 +100,62 @@ def calc_matrices(var_arr: np.ndarray, cv: np.ndarray) -> tuple[np.ndarray, np.n
         corr = cov / np.sqrt(np.outer(np.diag(cov),np.diag(cov)))
     return cov, cov_frac, corr
 
+def _get_xsec_hists_inner(smear_flat_idx, w_sig, truth_sig_idx, true_signal_weights,
+                           sig_hist_cv, bkg_reco_idx, w_bkg, n_bins,
+                           return_response=False):
+    """Core xsec histogram computation using pre-digitized indices.
+
+    Called by :func:`get_xsec_hists` (single call) and by
+    :func:`get_syst_hists` (which pre-computes the indices once across all knobs).
+
+    Parameters
+    ----------
+    smear_flat_idx : np.ndarray of int, shape (n_sig,)
+        Flattened 2D smearing-matrix index for signal events:
+        ``sig_reco_idx * n_bins + sig_true_idx``.
+    w_sig : np.ndarray, shape (n_sig, n_univs)
+        Scaled weights for selected signal events.
+    truth_sig_idx : np.ndarray of int, shape (n_truth,)
+        Bin indices for truth-level signal events (from the truth DataFrame).
+    true_signal_weights : np.ndarray, shape (n_truth, n_univs)
+        Weights for truth-level signal events.
+    sig_hist_cv : np.ndarray, shape (n_bins,)
+        CV truth-level signal histogram.
+    bkg_reco_idx : np.ndarray of int, shape (n_bkg,)
+        Bin indices for background events in the reco variable.
+    w_bkg : np.ndarray, shape (n_bkg, n_univs)
+        Scaled weights for background events.
+    n_bins : int
+        Number of histogram bins (``len(bins) - 1``).
+    return_response : bool, optional
+        If True, also return the per-universe response matrix.
+    """
+    smearing = np.array([
+        np.bincount(smear_flat_idx, weights=w_sig[:, u], minlength=n_bins * n_bins)
+        for u in range(w_sig.shape[1])
+    ], dtype=float).T.reshape(n_bins, n_bins, -1)
+
+    sig_hist_univ = np.array([
+        np.bincount(truth_sig_idx, weights=true_signal_weights[:, u], minlength=n_bins)
+        for u in range(true_signal_weights.shape[1])
+    ], dtype=float).T
+
+    response = np.divide(smearing, sig_hist_univ,
+                         out=np.zeros(smearing.shape, dtype=np.float64),
+                         where=sig_hist_univ > 0)
+    sig_reco_hists = np.einsum('ijk,j->ik', response, sig_hist_cv)
+
+    bkg_reco_hists = np.array([
+        np.bincount(bkg_reco_idx, weights=w_bkg[:, u], minlength=n_bins)
+        for u in range(w_bkg.shape[1])
+    ]).T
+
+    hists = sig_reco_hists + bkg_reco_hists
+    if return_response:
+        return hists, response
+    return hists
+
+
 def get_xsec_hists(reco_df: pd.DataFrame,
                    xsec_inputs: XSecInputs,
                    reco_weights: np.ndarray,
@@ -139,41 +196,29 @@ def get_xsec_hists(reco_df: pd.DataFrame,
         Per-universe response (smearing) matrix. Only returned when
         ``return_response=True``.
     """
-    true_signal_df    = xsec_inputs.true_signal_df
+    true_signal_df    = xsec_inputs.true_signal_df   # pre-filtered & lexsorted by XSecInputs
     true_signal_scale = xsec_inputs.true_signal_scale
     reco_var_true     = xsec_inputs.reco_var_true
     true_var_true     = xsec_inputs.true_var_true
-    
-    true_signal_df = ensure_lexsorted(true_signal_df,axis=1)
 
-    true_signal_df = true_signal_df[true_signal_df.signal==0]  # ensure signal-only truth sample
-    signal_mask = reco_df.signal==0
-    smearing = np.apply_along_axis(get_hist2d,0,
-                                   reco_weights[signal_mask],
-                                   reco_df[signal_mask][reco_var_reco],
-                                   reco_df[signal_mask][reco_var_true],
-                                   bins)
+    n_bins      = len(bins) - 1
+    signal_mask = reco_df.signal == 0
 
-    sig_hist_univ = np.apply_along_axis(get_hist1d,0,
-                                        true_signal_weights,
-                                        true_signal_df[true_var_true],bins)
-    sig_hist_cv = get_hist1d(np.ones(len(true_signal_df))*true_signal_scale,
-                              true_signal_df[true_var_true],
-                              bins)
-    
-    response = np.divide(smearing,sig_hist_univ,
-                         out=np.zeros_like(smearing),
-                         where=sig_hist_univ>0)
-    # response x cv
-    sig_reco_hists = np.einsum('ijk,j->ik', response, sig_hist_cv)
-    bkg_reco_hists = np.apply_along_axis(get_hist1d,0,
-                                         reco_weights[~signal_mask],
-                                         reco_df[~signal_mask][reco_var_reco],
-                                         bins)
-    hists = sig_reco_hists + bkg_reco_hists
-    if return_response:
-        return hists, response
-    return hists
+    reco_sig      = reco_df[signal_mask]
+    sig_reco_idx  = digitize_with_overflow(reco_sig[reco_var_reco], bins)
+    sig_true_idx  = digitize_with_overflow(reco_sig[reco_var_true], bins)
+    smear_flat_idx = sig_reco_idx * n_bins + sig_true_idx
+    w_sig         = reco_weights[signal_mask]
+
+    truth_sig_idx = digitize_with_overflow(true_signal_df[true_var_true], bins)
+    sig_hist_cv   = get_hist1d(np.ones(len(true_signal_df)) * true_signal_scale,
+                               true_signal_df[true_var_true], bins)
+
+    bkg_reco_idx = digitize_with_overflow(reco_df[~signal_mask][reco_var_reco], bins)
+    w_bkg        = reco_weights[~signal_mask]
+
+    return _get_xsec_hists_inner(smear_flat_idx, w_sig, truth_sig_idx, true_signal_weights,
+                                  sig_hist_cv, bkg_reco_idx, w_bkg, n_bins, return_response)
 
 def get_syst_hists(reco_df: pd.DataFrame,
                    reco_var: str | tuple,
@@ -230,9 +275,32 @@ def get_syst_hists(reco_df: pd.DataFrame,
             if base not in multisim_col:
                 multisim_col.append(base)
 
-    cv = get_hist1d(data=reco_df[reco_var], bins=bins, weights=scaling)
-    nbins = len(bins)
+    nbins    = len(bins)
+    n_out    = nbins - 1
+    reco_idx = digitize_with_overflow(reco_df[reco_var], bins)
+    cv       = np.bincount(reco_idx, weights=scaling, minlength=n_out).astype(float)
     syst_dict = {}
+
+    # Pre-compute xsec digitized indices — constant across all xsec knobs
+    _xsec = None
+    if (xsec_inputs is not None
+            and xsec_inputs.true_signal_df is not None
+            and xsec_inputs.reco_var_true is not None
+            and xsec_inputs.true_var_true is not None):
+        _sig_mask      = reco_df.signal == 0
+        _reco_sig      = reco_df[_sig_mask]
+        _sig_reco_idx  = digitize_with_overflow(_reco_sig[reco_var], bins)
+        _sig_true_idx  = digitize_with_overflow(_reco_sig[xsec_inputs.reco_var_true], bins)
+        _smear_flat_idx = _sig_reco_idx * n_out + _sig_true_idx
+        _truth_sig_idx = digitize_with_overflow(xsec_inputs.true_signal_df[xsec_inputs.true_var_true], bins)
+        _bkg_reco_idx  = digitize_with_overflow(reco_df[~_sig_mask][reco_var], bins)
+        _sig_hist_cv   = get_hist1d(
+            np.ones(len(xsec_inputs.true_signal_df)) * xsec_inputs.true_signal_scale,
+            xsec_inputs.true_signal_df[xsec_inputs.true_var_true], bins,
+        )
+        _xsec = dict(sig_mask=_sig_mask, smear_flat_idx=_smear_flat_idx,
+                     truth_sig_idx=_truth_sig_idx, bkg_reco_idx=_bkg_reco_idx,
+                     sig_hist_cv=_sig_hist_cv)
     
     # unisim
     if len(unisim_col)>0:
@@ -245,15 +313,17 @@ def get_syst_hists(reco_df: pd.DataFrame,
             response = None
             if is_xsec(col, xsec_inputs):
                 true_signal_weights = xsec_inputs.true_signal_df[col[2:]].values.astype(np.float64) * xsec_inputs.true_signal_scale
-                result = get_xsec_hists(reco_df, xsec_inputs,
-                                        weights.reshape(-1, 1),
-                                        true_signal_weights.reshape(-1, 1),
-                                        bins,
-                                        reco_var,
-                                        return_response=save_response)
+                w_sig = weights[_xsec['sig_mask']].reshape(-1, 1)
+                w_bkg = weights[~_xsec['sig_mask']].reshape(-1, 1)
+                result = _get_xsec_hists_inner(
+                    _xsec['smear_flat_idx'], w_sig, _xsec['truth_sig_idx'],
+                    true_signal_weights.reshape(-1, 1),
+                    _xsec['sig_hist_cv'], _xsec['bkg_reco_idx'], w_bkg, n_out,
+                    return_response=save_response,
+                )
                 hists, response = result if save_response else (result, None)
             else:
-                hists = np.apply_along_axis(get_hist1d, 0, weights, reco_df[reco_var], bins).reshape((nbins - 1, -1))
+                hists = np.bincount(reco_idx, weights=weights, minlength=n_out).reshape(n_out, 1)
 
             entry = {'hists': hists}
             if response is not None:
@@ -277,11 +347,19 @@ def get_syst_hists(reco_df: pd.DataFrame,
                 true_signal_ps1 = np.nan_to_num(xsec_inputs.true_signal_df[ps1_col[2:]].values.astype(np.float64), copy=False, nan=1.0)
                 true_signal_ms1 = np.nan_to_num(xsec_inputs.true_signal_df[ms1_col[2:]].values.astype(np.float64), copy=False, nan=1.0)
                 true_signal_weights = np.stack([true_signal_ps1, true_signal_ms1]).T * xsec_inputs.true_signal_scale
-                result = get_xsec_hists(reco_df, xsec_inputs, weights, true_signal_weights, bins, reco_var,
-                                        return_response=save_response)
+                w_sig = weights[_xsec['sig_mask']]
+                w_bkg = weights[~_xsec['sig_mask']]
+                result = _get_xsec_hists_inner(
+                    _xsec['smear_flat_idx'], w_sig, _xsec['truth_sig_idx'], true_signal_weights,
+                    _xsec['sig_hist_cv'], _xsec['bkg_reco_idx'], w_bkg, n_out,
+                    return_response=save_response,
+                )
                 hists, response = result if save_response else (result, None)
             else:
-                hists = np.apply_along_axis(get_hist1d, 0, weights, reco_df[reco_var], bins)
+                hists = np.array([
+                    np.bincount(reco_idx, weights=weights[:, u], minlength=n_out)
+                    for u in range(weights.shape[1])
+                ]).T
 
             entry = {'hists': hists}
             if response is not None:
@@ -289,7 +367,7 @@ def get_syst_hists(reco_df: pd.DataFrame,
             syst_dict[col[2]] = entry
 
     # multisim
-    if len(multisim_col)>0: 
+    if len(multisim_col)>0:
         for col in tqdm(multisim_col, desc='Running through multisims'):
             weights = reco_df[col].values.astype(np.float64)
             weights[np.isnan(weights)] = 1.0
@@ -299,11 +377,19 @@ def get_syst_hists(reco_df: pd.DataFrame,
             response = None
             if is_xsec(col, xsec_inputs):
                 true_signal_weights = xsec_inputs.true_signal_df[col[2:]].values.astype(np.float64) * xsec_inputs.true_signal_scale
-                result = get_xsec_hists(reco_df, xsec_inputs, weights, true_signal_weights, bins, reco_var,
-                                        return_response=save_response)
+                w_sig = weights[_xsec['sig_mask']]
+                w_bkg = weights[~_xsec['sig_mask']]
+                result = _get_xsec_hists_inner(
+                    _xsec['smear_flat_idx'], w_sig, _xsec['truth_sig_idx'], true_signal_weights,
+                    _xsec['sig_hist_cv'], _xsec['bkg_reco_idx'], w_bkg, n_out,
+                    return_response=save_response,
+                )
                 hists, response = result if save_response else (result, None)
             else:
-                hists = np.apply_along_axis(get_hist1d, 0, weights, reco_df[reco_var], bins)
+                hists = np.array([
+                    np.bincount(reco_idx, weights=weights[:, u], minlength=n_out)
+                    for u in range(weights.shape[1])
+                ]).T
 
             entry = {'hists': hists}
             if response is not None:
@@ -331,55 +417,67 @@ def get_syst(*args, save_response: bool = False, **kwargs) -> dict:
 
     return syst_dict
 
-def mcstat(indf, nuniv:int=100 , cols: list=['__ntuple','entry','rec.slc..index','run','subrun','evt','sample']) -> pd.DataFrame:
-    """
-    Add MC statistical uncertainty universes to the DataFrame.
-    This function generates Poisson-fluctuated weights for each event based on unique seeds
-    derived from specified columns. It creates `nuniv` universes of MC statistical weights.
-    
-    Heavily inspired by Mun's method in: `cafpyana/analysis_village/1mu1p0pi/wienersvd_unfolding.ipynb`
-    
+def mcstat(indf, nuniv: int = 100,
+           cols: list | None = None) -> pd.DataFrame:
+    """Add MC statistical uncertainty universes to the DataFrame.
+
+    Generates Poisson-fluctuated weights for each event based on unique seeds
+    derived from specified identifier columns, producing ``nuniv`` independent
+    universe weight columns.
+
+    Heavily inspired by Mun's method in:
+    ``cafpyana/analysis_village/1mu1p0pi/wienersvd_unfolding.ipynb``
+
     Parameters
     ----------
     indf : pd.DataFrame
-        Input dataframe, must contain the columns specified in `cols` for seed generation.
+        Input DataFrame. Must contain the columns (or index names) listed in
+        ``cols`` for seed generation.
     nuniv : int, optional
-        Number of MC statistical universes to create (default is 100).
-    cols : list, optional
-        List of column names to use for generating unique seeds (default includes common identifiers).
+        Number of MC statistical universes to create (default 100).
+    cols : list of str, optional
+        Column names (at level 0) or index names used to build a unique
+        per-event seed.  Defaults to
+        ``['__ntuple', 'entry', 'rec.slc..index', 'run', 'subrun', 'evt', 'sample']``.
+
     Returns
     -------
     pd.DataFrame
-        DataFrame with added MC statistical weight universes.
+        ``indf`` with ``nuniv`` MC-stat weight columns appended under the
+        ``('slc', 'truth', 'MCstat', 'univ_i', '', '')`` MultiIndex hierarchy.
+
     Notes
     -----
-    - Unique seeds are generated by hashing the specified columns for each event.
-    - Poisson random numbers with mean 1.0 are generated for each universe using the combined seed.
-    - The resulting weights are stored in a MultiIndex DataFrame under the 'slc', 'truth', 'MCstat' hierarchy.
+    Each event is seeded from ``hash(event_identifiers) % 2**32``; all
+    ``nuniv`` Poisson(1.0) draws for that event are generated from a single
+    ``default_rng`` call, giving O(n_events) RNG constructions instead of
+    O(n_events × nuniv).
     """
-    df = indf.copy()
-    # check if all the cols are in the input df 
+    if cols is None:
+        cols = ['__ntuple', 'entry', 'rec.slc..index', 'run', 'subrun', 'evt', 'sample']
+
+    top_level = set(indf.columns.get_level_values(0)) | set(indf.index.names)
     for col in cols:
-        if col not in df.columns.get_level_values(0):
-            raise ValueError(f"Column '{col}' not found in DataFrame columns.")
-    
-    seed_cols = [tuple([col] +[""]*(len(df.columns[0])-1)) for col in cols]
-    seed_df = df.reset_index()[seed_cols]
+        if col not in top_level:
+            raise ValueError(f"Column '{col}' not found in DataFrame columns or index.")
 
-    seed_df['unique_seed'] = seed_df.apply(lambda x: hash(tuple(x)) % 2**32, axis = 1)
-    unique_seeds = seed_df.unique_seed.to_numpy()
-    univ_seeds = [hash(f"universe_{x}")% 2**32 for x in range(nuniv)]
+    seed_cols = [tuple([col] + [""] * (len(indf.columns[0]) - 1)) for col in cols]
+    unique_seeds = (
+        indf.reset_index()[seed_cols]
+        .apply(lambda x: hash(tuple(x)) % 2**32, axis=1)
+        .to_numpy()
+    )
+    n_events = len(unique_seeds)
 
-    mcstat_univ_cols = pd.MultiIndex.from_product([['slc'],['truth'],["MCstat"], [f"univ_{i}" for i in range(nuniv)], [""], [""]],)
-    mcstat_univ_wgt = pd.DataFrame(1.0,index=df.index,columns=mcstat_univ_cols,)
+    # One RNG per event; draw all nuniv universes at once (~nuniv× fewer objects).
+    out = np.empty((n_events, nuniv), dtype=np.float32)
+    for i, seed in enumerate(tqdm(unique_seeds, desc='MCstat universes')):
+        out[i] = np.random.default_rng(int(seed)).poisson(1.0, size=nuniv)
 
-    for iuniv in tqdm(range(nuniv)):
-        combined_seeds = (unique_seeds + univ_seeds[iuniv]) % 2**32
-        weights = np.array([
-            np.random.default_rng(int(s)).poisson(1.0) for s in combined_seeds
-        ])
-        mcstat_univ_wgt[("slc", "truth", "MCstat", f"univ_{iuniv}", "", "")] = weights
-    return df.join(mcstat_univ_wgt)
+    mcstat_univ_cols = pd.MultiIndex.from_product(
+        [['slc'], ['truth'], ['MCstat'], [f"univ_{i}" for i in range(nuniv)], [''], ['']]
+    )
+    return indf.join(pd.DataFrame(out, index=indf.index, columns=mcstat_univ_cols))
 
 
 def get_detvar_systs(detvar_dict, var, bins,
@@ -436,15 +534,21 @@ def get_detvar_systs(detvar_dict, var, bins,
         this_cv   = this_dict['cv_df']
         this_norm = integrated_flux * (this_dict['pot'] / 1e6)
 
+        def _ensure_signal(df):
+            """Add the signal column via define_signal if it is missing."""
+            if event_type in ("signal", "background") and "signal" not in df.columns:
+                df = define_signal(df, prefix=('slc', 'truth'))
+            return df
+
         cv_sel = select(this_cv, **_sel_kw) if _needs_select else this_cv
-        cv_sel = apply_event_mask(ensure_lexsorted(cv_sel, axis=1), event_type)
+        cv_sel = apply_event_mask(_ensure_signal(ensure_lexsorted(cv_sel, axis=1)), event_type)
         cv_hist = get_hist1d(data=cv_sel[var], bins=bins) / this_norm
 
         dv_dfs = this_dv if isinstance(this_dv, list) else [this_dv]
         if _needs_select:
             dv_dfs = [select(dv, **_sel_kw) for dv in dv_dfs]
         dv_hists = np.column_stack([
-            get_hist1d(data=apply_event_mask(ensure_lexsorted(dv, axis=1), event_type)[var], bins=bins)
+            get_hist1d(data=apply_event_mask(_ensure_signal(ensure_lexsorted(dv, axis=1)), event_type)[var], bins=bins)
             for dv in dv_dfs
         ]) / this_norm
 
@@ -555,8 +659,11 @@ def get_syst_df(dicts: list, cv_hist: np.ndarray) -> pd.DataFrame:
     Returns
     -------
     pd.DataFrame
-        Columns: ``key``, ``category``, ``subcategory``, ``unc``, ``sum``, ``top5``.
-        Sorted by category then mean fractional uncertainty (descending).
+        Columns: ``key``, ``category``, ``subcategory``, ``unc_diag``, ``unc_diag_avg``, ``unc_norm``, ``top5``.
+        ``unc_diag``     — per-bin fractional uncertainty: sqrt(diag(cov)) / cv.
+        ``unc_diag_avg`` — mean of ``unc_diag``; summary of per-bin shape uncertainty.
+        ``unc_norm``     — normalization fraction: sqrt(sum_ij cov[i,j]) / sum(cv).
+        Sorted by category then ``unc_norm`` (descending).
         ``top5`` flags the five largest sources per category.
     """
     records = []
@@ -565,19 +672,19 @@ def get_syst_df(dicts: list, cv_hist: np.ndarray) -> pd.DataFrame:
     for d in dicts:
         for raw_key in d:
             cov = d[raw_key]['cov']
-            unc = np.sqrt(np.diag(cov)) / cv_hist
+            unc_diag = np.sqrt(np.diag(cov)) / cv_hist
             cov_sum = np.sum(cov)
             if cov_sum < 0:
                 print(f"Note: sum of covariance matrix for '{raw_key}' is {cov_sum:.3e} (floating-point noise near zero); clamping to 0.")
                 cov_sum = 0.0
-            tot = float(np.sqrt(cov_sum) / N_tot) if N_tot > 0 else 0.0
+            unc_norm = float(np.sqrt(cov_sum) / N_tot) if N_tot > 0 else 0.0
 
             category = _classify_category(raw_key)
             if category is None:
                 print(f"Warning: category not found for key '{raw_key}'")
                 records.append({
                     "key": raw_key, "category": "Other", "subcategory": "Other",
-                    "unc": unc, "sum": tot,
+                    "unc_diag": unc_diag, "unc_diag_avg": float(np.mean(unc_diag)), "unc_norm": unc_norm,
                 })
                 continue
 
@@ -588,14 +695,15 @@ def get_syst_df(dicts: list, cv_hist: np.ndarray) -> pd.DataFrame:
             subcategory = _classify_detvar_subcategory(extracted_key) if category == "DetVar" else category
             records.append({
                 "key": extracted_key, "category": category, "subcategory": subcategory,
-                "unc": unc, "sum": tot,
+                "unc_diag": unc_diag, "unc_diag_avg": float(np.mean(unc_diag)), "unc_norm": unc_norm,
             })
 
-    syst_df = pd.DataFrame(records).sort_values(['category', 'sum'], ascending=[False, False])
-    syst_df['top5'] = syst_df.groupby('category')['sum'].rank(method='first', ascending=False) <= 5
+    syst_df = pd.DataFrame(records).sort_values(['category', 'unc_norm'], ascending=[False, False])
+    syst_df['top5'] = syst_df.groupby('category')['unc_norm'].rank(method='first', ascending=False) <= 5
     return syst_df
 
-def make_multiverse_weights(evtdf, knob_list, n_univs=100, evt_prefix=None, nudf=None):
+def make_multiverse_weights(evtdf, knob_list, n_univs=100, evt_prefix=None, nudf=None,
+                            drop_originals=False):
     """Expand unisim/multisigma knobs into multisim-style universe weight columns.
 
     For each knob in ``knob_list``, converts morph (unisim) or ps1/ms1 (multisigma)
@@ -621,6 +729,10 @@ def make_multiverse_weights(evtdf, knob_list, n_univs=100, evt_prefix=None, nudf
         Neutrino-level DataFrame. When provided, universe weights are generated
         for ``nudf`` as well and synchronized into ``evtdf``. Must share index
         names with ``evtdf``.
+    drop_originals : bool, default False
+        If True, drop the original morph/multisigma columns for each converted
+        knob from the output DataFrame(s). Columns are only dropped for knobs
+        that were successfully expanded (i.e. detected as morph or multisigma).
 
     Returns
     -------
@@ -631,85 +743,136 @@ def make_multiverse_weights(evtdf, knob_list, n_univs=100, evt_prefix=None, nudf
         Both DataFrames with new universe columns, after synchronization.
         Returned when ``nudf`` is provided.
     """
-    def _seed(knob, i, df_idx):
-        np.random.seed(hash(knob + str(i) + str(df_idx)) % (2**32))
-
-    def _cap(wgt):
-        return np.minimum(np.maximum(wgt, 0), 10)
-
-    def _morph_wgt(base_weight):
-        return _cap(1 + (base_weight - 1) * 2 * np.abs(np.random.normal(0, 1)))
-
-    def _multisigma_wgt(sigma_weight):
-        return _cap(1 + (sigma_weight - 1) * np.random.normal(0, 1))
-
     if nudf is not None and nudf.index.names != evtdf.index.names:
         raise ValueError("Index names of nudf and evtdf must match.")
 
-    new_columns_nudf = {}
-    new_columns_evtdf = {}
+    def _draws(knob, df_idx):
+        """Return (n_univs,) array of per-universe Gaussian draws with reproducible seeds."""
+        out = np.empty(n_univs)
+        for i in range(n_univs):
+            np.random.seed(hash(knob + str(i) + str(df_idx)) % 2**32)
+            out[i] = np.random.normal(0, 1)
+        return out
 
-    for knob in tqdm(knob_list):
-        evt_knob_key = (evt_prefix + (knob,)) if evt_prefix else knob
+    # --- Pre-scan: identify which knobs expand so we can pre-allocate ---
+    # This avoids accumulating n_knobs × n_univs separate arrays in a dict,
+    # which would hold 2–3× the final new-column footprint simultaneously.
+    evtdf_active = []  # (knob, evtdf_knob_key, evtdf_knob_cols, kind)
+    nudf_active  = []  # (knob, nudf_knob_cols, kind)
+    evtdf_cols_to_drop = []
+    nudf_cols_to_drop  = []
 
-        ## nudf (optional)
+    for knob in knob_list:
+        evtdf_knob_key  = (evt_prefix + (knob,)) if evt_prefix else knob
+        evtdf_knob_cols = evtdf[evtdf_knob_key].columns
+        if len(evtdf_knob_cols) == 1:
+            evtdf_active.append((knob, evtdf_knob_key, evtdf_knob_cols, 'morph'))
+            if drop_originals:
+                key_t = evtdf_knob_key if isinstance(evtdf_knob_key, tuple) else (evtdf_knob_key,)
+                evtdf_cols_to_drop.extend(key_t + col for col in evtdf_knob_cols)
+        elif len(evtdf_knob_cols) == 7:
+            evtdf_active.append((knob, evtdf_knob_key, evtdf_knob_cols, 'multisigma'))
+            if drop_originals:
+                key_t = evtdf_knob_key if isinstance(evtdf_knob_key, tuple) else (evtdf_knob_key,)
+                evtdf_cols_to_drop.extend(key_t + col for col in evtdf_knob_cols)
+
         if nudf is not None:
-            this_cols_nudf = nudf[knob].columns
-            if len(this_cols_nudf) == 1:  # morph
-                for i in range(n_univs):
-                    _seed(knob, i, 0)
-                    new_columns_nudf[(knob, f"univ_{i}")] = _morph_wgt(nudf[knob].morph)
-            elif len(this_cols_nudf) == 7:  # multisigma
-                for i in range(n_univs):
-                    _seed(knob, i, 0)
-                    new_columns_nudf[(knob, f"univ_{i}")] = _multisigma_wgt(nudf[knob].ps1)
+            nudf_knob_cols = nudf[knob].columns
+            if len(nudf_knob_cols) == 1:
+                nudf_active.append((knob, nudf_knob_cols, 'morph'))
+                if drop_originals:
+                    nudf_cols_to_drop.extend((knob,) + col for col in nudf_knob_cols)
+            elif len(nudf_knob_cols) == 7:
+                nudf_active.append((knob, nudf_knob_cols, 'multisigma'))
+                if drop_originals:
+                    nudf_cols_to_drop.extend((knob,) + col for col in nudf_knob_cols)
 
-        ## evtdf
-        this_cols_evtdf = evtdf[evt_knob_key].columns
-        if len(this_cols_evtdf) == 1:  # morph
-            for i in range(n_univs):
-                _seed(knob, i, 1)
-                new_columns_evtdf[evt_knob_key + (f"univ_{i}",)] = _morph_wgt(evtdf[evt_knob_key].morph)
-        elif len(this_cols_evtdf) == 7:  # multisigma
-            for i in range(n_univs):
-                _seed(knob, i, 1)
-                new_columns_evtdf[evt_knob_key + (f"univ_{i}",)] = _multisigma_wgt(evtdf[evt_knob_key].ps1)
+    # --- Pre-allocate output arrays; fill per-knob slice then del wgts immediately ---
+    evtdf_new_arr  = np.empty((len(evtdf), len(evtdf_active) * n_univs), dtype=np.float32)
+    evtdf_new_cols = []
 
-    # Pad and concat evtdf new columns
-    new_cols_evtdf = pd.DataFrame(new_columns_evtdf, index=evtdf.index)
-    if len(new_cols_evtdf.columns) > 0:
-        n_levels_evt = evtdf.columns.nlevels
-        padded_cols_evt = [col + ("",) * (n_levels_evt - len(col)) for col in new_cols_evtdf.columns]
-        new_cols_evtdf.columns = pd.MultiIndex.from_tuples(padded_cols_evt, names=evtdf.columns.names)
-    evtdf = pd.concat([evtdf, new_cols_evtdf], axis=1)
+    for j, (knob, evtdf_knob_key, _cols, kind) in enumerate(tqdm(evtdf_active)):
+        base  = (evtdf[evtdf_knob_key].morph.values if kind == 'morph'
+                 else evtdf[evtdf_knob_key].ps1.values)
+        draws = _draws(knob, 1)
+        if kind == 'morph':
+            wgts = np.clip(1 + (base[:, None] - 1) * 2 * np.abs(draws), 0, 10)
+        else:
+            wgts = np.clip(1 + (base[:, None] - 1) * draws, 0, 10)
+        evtdf_new_arr[:, j * n_univs:(j + 1) * n_univs] = wgts
+        del wgts
+        evtdf_new_cols.extend(evtdf_knob_key + (f"univ_{i}",) for i in range(n_univs))
+
+    nudf_univ_keys = {}
+    nudf_new_arr   = (np.empty((len(nudf), len(nudf_active) * n_univs), dtype=np.float32)
+                      if nudf is not None and nudf_active else None)
+    nudf_new_cols  = []
+
+    if nudf is not None and nudf_new_arr is not None:
+        for j, (knob, nudf_knob_cols, kind) in enumerate(nudf_active):
+            base  = (nudf[knob].morph.values if kind == 'morph'
+                     else nudf[knob].ps1.values)
+            draws = _draws(knob, 0)
+            if kind == 'morph':
+                wgts = np.clip(1 + (base[:, None] - 1) * 2 * np.abs(draws), 0, 10)
+            else:
+                wgts = np.clip(1 + (base[:, None] - 1) * draws, 0, 10)
+            nudf_new_arr[:, j * n_univs:(j + 1) * n_univs] = wgts
+            del wgts
+            keys = [(knob, f"univ_{i}") for i in range(n_univs)]
+            nudf_new_cols.extend(keys)
+            nudf_univ_keys[knob] = keys
+
+    # --- Build and concat new evtdf columns ---
+    evtdf_nlevels = evtdf.columns.nlevels
+    evtdf_padded  = [col + ("",) * (evtdf_nlevels - len(col)) for col in evtdf_new_cols]
+    evtdf_new_df  = pd.DataFrame(
+        evtdf_new_arr, index=evtdf.index,
+        columns=pd.MultiIndex.from_tuples(evtdf_padded, names=evtdf.columns.names),
+    )
+    del evtdf_new_arr
+    evtdf = pd.concat([evtdf, evtdf_new_df], axis=1)
+    del evtdf_new_df
 
     if nudf is None:
+        if drop_originals and evtdf_cols_to_drop:
+            evtdf = evtdf.drop(columns=evtdf_cols_to_drop)
         return evtdf
 
-    # Pad and concat nudf new columns
-    new_cols_nudf = pd.DataFrame(new_columns_nudf, index=nudf.index)
-    if len(new_cols_nudf.columns) > 0:
-        n_levels_nu = nudf.columns.nlevels
-        padded_cols_nu = [col + ("",) * (n_levels_nu - len(col)) for col in new_cols_nudf.columns]
-        new_cols_nudf.columns = pd.MultiIndex.from_tuples(padded_cols_nu, names=nudf.columns.names)
-    nudf = pd.concat([nudf, new_cols_nudf], axis=1)
+    # --- Build and concat new nudf columns ---
+    nudf_nlevels = nudf.columns.nlevels
+    nudf_padded  = [col + ("",) * (nudf_nlevels - len(col)) for col in nudf_new_cols]
+    if nudf_padded:
+        nudf_new_df = pd.DataFrame(
+            nudf_new_arr, index=nudf.index,
+            columns=pd.MultiIndex.from_tuples(nudf_padded, names=nudf.columns.names),
+        )
+        del nudf_new_arr
+        nudf = pd.concat([nudf, nudf_new_df], axis=1)
+        del nudf_new_df
 
-    # Synchronize univ weights from nudf into evtdf using the shared row index
+    # --- Synchronize nudf universe weights into evtdf ---
+    nudf_nlevels  = nudf.columns.nlevels
+    evtdf_nlevels = evtdf.columns.nlevels
+    nudf_in_evtdf = nudf.index.isin(evtdf.index)
+
     for knob in knob_list:
-        if "multisim" in knob:
+        if "multisim" in knob or knob not in nudf_univ_keys:
             continue
-        target_cols = [
-            col for col in nudf.columns
-            if knob in "_".join(list(col)) and 'univ_' in "_".join(list(col))
-        ]
-        mapped_vals = nudf[target_cols][nudf.index.isin(evtdf.index)]
-        evt_target_cols = [(evt_prefix + col) if evt_prefix else col for col in target_cols]
-        n_levels_evt = evtdf.columns.nlevels
-        evt_target_cols = [col + ("",) * (n_levels_evt - len(col)) for col in evt_target_cols]
-        if mapped_vals.isna().any().any():
-            print(f"Found NaN values in mapped_vals for knob: {knob}")
-        evtdf[evt_target_cols] = mapped_vals
+        raw_nu_cols     = nudf_univ_keys[knob]
+        nudf_univ_cols  = [col + ("",) * (nudf_nlevels  - len(col)) for col in raw_nu_cols]
+        raw_evt_cols    = [(evt_prefix + col) if evt_prefix else col for col in raw_nu_cols]
+        evtdf_univ_cols = [col + ("",) * (evtdf_nlevels - len(col)) for col in raw_evt_cols]
+        synced_vals = nudf.loc[nudf_in_evtdf, nudf_univ_cols]
+        if synced_vals.isna().any().any():
+            print(f"Found NaN values in synced_vals for knob: {knob}")
+        evtdf[evtdf_univ_cols] = synced_vals
 
+    if drop_originals:
+        if evtdf_cols_to_drop:
+            evtdf = evtdf.drop(columns=evtdf_cols_to_drop)
+        if nudf_cols_to_drop:
+            nudf = nudf.drop(columns=nudf_cols_to_drop)
     return nudf, evtdf
 
 

@@ -30,6 +30,7 @@ Examples
     # use a specific CV as the reference
     python process_detvars.py -i /path/to/dfs/ -o /path/to/output/ --cv-key cv_1
 """
+from __future__ import annotations
 
 import argparse
 import os

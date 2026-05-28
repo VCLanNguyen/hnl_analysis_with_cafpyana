@@ -1,11 +1,13 @@
 """Generic DataFrame and histogram utilities."""
+from __future__ import annotations
+
 import numpy as np
 import pandas as pd
 from pyanalib.pandas_helpers import *
 
 from . import config
 
-__all__ = ['ensure_lexsorted', 'merge_hdr', 'apply_event_mask', 'get_hist1d', 'get_hist2d', 'flux_pot_weights']
+__all__ = ['ensure_lexsorted', 'merge_hdr', 'apply_event_mask', 'digitize_with_overflow', 'get_hist1d', 'get_hist2d', 'flux_pot_weights']
 
 def ensure_lexsorted(frame, axis):
     """Ensure DataFrame axes are fully lexsorted when using MultiIndex.
@@ -110,6 +112,32 @@ def apply_event_mask(df: pd.DataFrame, event_mask: str | None = None) -> pd.Data
 # Histogram utilities
 # ---------------------------------------------------------------------------
 
+def digitize_with_overflow(data, bins):
+    """Return 0-based bin indices with nan/inf/overflow clipped into edge bins.
+
+    Values below ``bins[0]`` map to index 0; values at or above ``bins[-1]``
+    map to index ``len(bins)-2`` (the last bin).  NaN and ±inf are treated as
+    edge-bin values rather than raising or producing out-of-range indices.
+
+    Parameters
+    ----------
+    data : array-like
+        Values to digitize.
+    bins : np.ndarray
+        Monotonically increasing bin edges.
+
+    Returns
+    -------
+    np.ndarray of int
+        0-based bin indices, shape ``(len(data),)``.
+    """
+    a = np.asarray(data, dtype=float)
+    a = np.nan_to_num(a, nan=bins[-1]-1e-10, posinf=bins[-1]-1e-10, neginf=bins[0])
+    n_bins = len(bins) - 1
+    return np.clip(np.searchsorted(bins, np.clip(a, bins[0], bins[-1]-1e-10), side='right') - 1,
+                   0, n_bins - 1)
+
+
 def flux_pot_weights(df: pd.DataFrame, mcbnb_pot: float, integrated_flux: float) -> np.ndarray:
     """Return flux+POT normalized per-event weights from ``weights_mc``.
 
@@ -155,11 +183,8 @@ def get_hist1d(weights=None, data=None, bins=None, overflow=True, **kwargs):
     if weights is None:
         weights = np.ones(len(data))
     if overflow:
-        cleaned = np.nan_to_num(data, nan=bins[-1] - 1e-10,
-                                posinf=bins[-1] - 1e-10,
-                                neginf=bins[0])
-        clipped = np.clip(cleaned, bins[0], bins[-1] - 1e-10)
-        return np.histogram(clipped, bins=bins, weights=weights, **kwargs)[0]
+        idx = digitize_with_overflow(data, bins)
+        return np.bincount(idx, weights=weights, minlength=len(bins)-1).astype(float)
     else:
         return np.histogram(data, bins=bins, weights=weights, **kwargs)[0]
 
@@ -195,14 +220,11 @@ def get_hist2d(weights=None, x=None, y=None, bins=None, overflow=True, **kwargs)
     if weights is None:
         weights = np.ones(len(x))
     if overflow:
-        cx = np.nan_to_num(x, nan=x_bins[-1] - 1e-10,
-                           posinf=x_bins[-1] - 1e-10,
-                           neginf=x_bins[0])
-        cy = np.nan_to_num(y, nan=y_bins[-1] - 1e-10,
-                           posinf=y_bins[-1] - 1e-10,
-                           neginf=y_bins[0])
-        cx = np.clip(cx, x_bins[0], x_bins[-1] - 1e-10)
-        cy = np.clip(cy, y_bins[0], y_bins[-1] - 1e-10)
-        return np.histogram2d(cx, cy, bins=[x_bins, y_bins], weights=weights, **kwargs)[0]
+        n_x = len(x_bins) - 1
+        n_y = len(y_bins) - 1
+        xi = digitize_with_overflow(x, x_bins)
+        yi = digitize_with_overflow(y, y_bins)
+        flat = xi * n_y + yi
+        return np.bincount(flat, weights=weights, minlength=n_x * n_y).reshape(n_x, n_y).astype(float)
     else:
         return np.histogram2d(x, y, bins=[x_bins, y_bins], weights=weights, **kwargs)[0]
