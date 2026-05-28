@@ -5,6 +5,42 @@ top each time changes are merged that other users should know about.
 
 ---
 
+## 2026-05-28 — Plotting refinements, xsec covariance fix, sideband example notebook
+
+### Bug fixes
+
+**`funcs.py` — xsec covariance normalization corrected**
+The cross-section covariance matrix was not normalized consistently with the rate
+covariance. The pipeline has been streamlined so both use the same normalization path.
+
+**`preprocess.py` — pi0 kinematics removed from default preprocessing**
+`preprocess_mc` / `preprocess_data` no longer call `add_pi0` by default. Pi0 kinematics
+are opt-in via an explicit `add_pi0(df)` call after preprocessing.
+
+**`syst.py` — integrated uncertainty uses full covariance sum**
+Fractional uncertainties in `syst_df` now use `sqrt(sum_ij C_ij) / N_total` consistently
+(matching the existing `plotting.py` convention), rather than a partial sum.
+
+---
+
+### Improvements
+
+**`plot_syst_category_breakdown` — xsec view and event-rate overlay**
+The breakdown plot now supports an xsec covariance view alongside the existing rate view,
+and accepts an optional flag to overlay the predicted event-rate histogram on each panel.
+
+**`plot_detvar` — optional bin labels and corrected ylabel**
+`plot_detvar` accepts `bin_labels` for custom x-axis tick labels; the ylabel is now
+derived from the variable name rather than hardcoded.
+
+**Documentation**
+`README.md` now notes that `preprocess.py` contains hard-coded CAF column names specific
+to Gen1 nuecc and must be updated for a different analyzer. A new
+[`examples/sideband_plots.ipynb`](examples/sideband_plots.ipynb) notebook demonstrates
+the full sideband-region workflow.
+
+---
+
 ## 2026-05-20 — Package reorganization; `detvar/` subpackage; `syst_vars` plot API
 
 ### Breaking changes
