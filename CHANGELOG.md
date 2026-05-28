@@ -38,6 +38,109 @@ derived from the variable name rather than hardcoded.
 to Gen1 nuecc and must be updated for a different analyzer. A new
 [`examples/sideband_plots.ipynb`](examples/sideband_plots.ipynb) notebook demonstrates
 the full sideband-region workflow.
+## 2026-05-27 — External plotting support; `categories` kwarg; `SystematicsOutput` as systs
+
+### Breaking changes
+
+**`PlottingConfig.generic` field removed**
+
+Replace `generic=True` with `categories=nue.generic_categories`:
+
+```python
+# Before
+cfg = PlottingConfig(generic=True)
+
+# After
+cfg = PlottingConfig(categories=nue.generic_categories)
+```
+
+---
+
+### New features
+
+**`signal_categories_external` — simplified category scheme for external plots**
+
+Merges the fine-grained internal categories into six broader stacks suitable for
+publications and talks. Pass via the new `categories` kwarg:
+
+```python
+bins, steps, err, sd = nue.plot_var(df, var, bins, categories=nue.signal_categories_external)
+```
+
+---
+
+**`categories` kwarg on `plot_var` / `plot_mc_data`**
+
+Any category dict can now be passed directly, taking priority over `pdg=True` / `mode=True`:
+
+```python
+# Use the broad external scheme
+nue.plot_mc_data(mc_df, data_df, var, bins, categories=nue.signal_categories_external)
+
+# Or any user-defined dict with "value"/"values", "label", "color" keys
+nue.plot_var(df, var, bins, categories=my_cats)
+```
+
+---
+
+**`SystematicsOutput` accepted as `systs` in `plot_var` / `plot_mc_data`**
+
+Pass a pre-computed `SystematicsOutput` directly — no need to unpack fields manually:
+
+```python
+output = nue.get_total_cov(mc_df, var, bins, mcbnb_pot=mc_pot)
+
+# Before — had to pass systs=True and rely on universe columns
+# After — pass the output object directly
+nue.plot_mc_data(mc_df, data_df, var, bins, systs=output)
+```
+
+`SystematicsOutput` now stores `mcbnb_pot` (set automatically by `get_total_cov`) so the
+plotting function can derive the correct flux/POT scale without extra arguments.
+
+---
+
+**`InFiducial` — shared fiducial volume function**
+
+`InFiducial` is now a named, exported function so the same FV definition is used by
+`DEFAULT_CUTS`, `define_signal`, and any user code:
+
+```python
+from nueana.analysis import InFiducial
+
+in_fv = InFiducial(df.slc.vertex)   # same cut used everywhere
+```
+
+---
+
+**`annotate_sbnd` / `PlottingConfig` — new `internal` and `categories` fields**
+
+`annotate_sbnd` (renamed from `annotate_internal`) is now exported and accepts
+`internal=False` to stamp "SBND Analysis In Progress" instead of "SBND Internal".
+Both `PlottingConfig` and `plot_mc_data` propagate `internal` automatically:
+
+```python
+cfg = PlottingConfig(
+    internal=False,
+    categories=nue.signal_categories_external,
+)
+```
+
+---
+
+**`exclusive/` subpackage — Ar23+ exclusive channel support**
+
+New `nueana/exclusive/` subpackage with helpers for merging the exclusive Ar23+ νeCC
+sample into the inclusive analysis and removing signal overlap to prevent double-counting.
+`load_mc` gains two new parameters to support this workflow:
+
+```python
+mc_df, mc_pot, mc_ngen = nue.load_mc(
+    "/path/to/inclusive.df",
+    excl_mc_df=excl_df,   # merged in automatically with overlap removed
+    chunk_splits=4,        # batched loading for large files
+)
+```
 
 ---
 
