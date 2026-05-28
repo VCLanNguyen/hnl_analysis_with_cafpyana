@@ -20,7 +20,7 @@ plotting, and uncertainty studies.
 - `analysis.py`: **The single file to edit for a new analysis.** Signal/background category dicts, physics constants, flux values, cut sequences, truth-labeling functions, and analysis variable definitions.
 - `classes.py`: Core dataclasses — `CutSpec`, `VariableConfig`, `SystematicsInput`, `SystematicsOutput`, `PlottingConfig`.
 - `config.py`: Global paths and environment setup (cafpyana path, flux file, detvar files).
-- `preprocess.py`: DataFrame preprocessing — column fixes, pi0 kinematics, secondary shower energy corrections.
+- `preprocess.py`: DataFrame preprocessing — column fixes, pi0 kinematics, secondary shower energy corrections. **Contains hard-coded CAF column names specific to Gen1 nuecc; update for a different analyzer.**
 - `selection.py`: Event selection pipeline (`select`, `select_sideband`) and cut helpers (`drop_cuts`, `modify_cut`).
 - `plotting.py`: Stacked MC, data overlay, data/MC ratio, and systematics breakdown plots.
 - `funcs.py`: High-level systematics driver — total covariance calculation and custom uncertainty helpers.
@@ -105,6 +105,13 @@ stages = nue.select(df, savedict=True)
 df_preflash = nue.select(df, stage="flash_pe")
 ```
 
+### 5. Update preprocessing — `preprocess.py`
+
+`preprocess_mc` and `preprocess_data` apply fixes that may be analysis specific, or 
+MC/data version specific. For a different analyzer, update the individual fix functions
+(`fix_flash_pe_scale`, `fix_flash_time`, `fix_prim_shw_energy`, `fix_sec_shw_energy`,
+`add_phi`) with your variables, or replace the functions entirely. 
+
 ### 4. Define your analysis variables — `analysis.py`
 
 Add a factory function returning a `VariableConfig` for each variable you want to plot or unfold:
@@ -148,7 +155,7 @@ output = nue.plot_mc_data(
 )
 ```
 
-See [`examples/signal_plots.ipynb`](examples/signal_plots.ipynb) for a complete worked example.
+See [`examples/signal_plots.ipynb`](examples/signal_plots.ipynb) for a complete worked example of signal-region plots, and [`examples/sideband_plots.ipynb`](examples/sideband_plots.ipynb) for the sideband equivalent.
 
 ## Notes and caveats
 
