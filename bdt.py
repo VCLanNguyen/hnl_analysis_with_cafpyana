@@ -688,8 +688,12 @@ def eval_bdt(model,
         sm_sel  = sm_df[np.array(ms_plot)]
 
         # Relabel the HNL entry for this plot only (local dict copy; no global mutation).
+        # Split into a background-only dict (for the mc stack) and an hnl-only dict (for
+        # the step overlay) so each plot_var call only iterates its own categories --
+        # sharing one dict across both calls double-legends every category.
         _categories = plot_kwargs.pop('categories', signal_categories_hnl)
-        _categories = {**_categories, 'hnl': {**_categories['hnl'], 'label': hnl_label}}
+        _mc_categories  = {k: v for k, v in _categories.items() if k not in ('hnl', 'hnlcosmic')}
+        _hnl_categories = {'hnl': {**_categories['hnl'], 'label': hnl_label}}
         # Merge legend_kwargs: force ncol=1 unless caller overrides it
         _lkw = {'ncol': 1, **plot_kwargs.pop('legend_kwargs', {})}
         fig, ax = plot_mc_hnl(
@@ -699,7 +703,8 @@ def eval_bdt(model,
             bins          = plot_bins,
             scale_nu      = scale_nu,
             scale_hnl     = scale_hnl,
-            categories    = _categories,
+            categories    = _mc_categories,
+            hnl_categories= _hnl_categories,
             legend_kwargs = _lkw,
             **plot_kwargs,
         )

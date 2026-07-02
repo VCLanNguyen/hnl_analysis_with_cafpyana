@@ -769,6 +769,7 @@ def plot_mc_hnl_data(mc_df: pd.DataFrame,
                      savefig: str = "",
                      scale_nu: float = 1.0,
                      scale_hnl: float = 1.0,
+                     hnl_categories: dict | None = None,
                      config: PlottingConfig | None = None,
                      **kwargs) -> tuple[plt.Figure, plt.Axes, plt.Axes]:
     """Create a combined MC stack + HNL step histogram + data overlay plot with a data/MC ratio subplot.
@@ -776,6 +777,12 @@ def plot_mc_hnl_data(mc_df: pd.DataFrame,
     Same as :func:`plot_mc_data`, but overlays an additional HNL sample as an
     unfilled step histogram on top of the MC stack. Pass
     ``categories=signal_categories_hnl`` to stack by the HNL signal/background scheme.
+
+    ``categories`` (from ``config``/``kwargs``) is used for the MC stack. The HNL step
+    uses ``hnl_categories`` if given, else falls back to the same ``categories``. Passing
+    the same multi-entry dict to both without narrowing ``hnl_categories`` means every
+    category gets iterated (and potentially legended) twice, once per call -- pass a
+    narrowed ``hnl_categories`` (e.g. just the ``hnl`` entry) to avoid that.
 
     Parameters
     ----------
@@ -837,9 +844,12 @@ def plot_mc_hnl_data(mc_df: pd.DataFrame,
 
     data_args = dict(df=data_df, var=var, bins=bins, ax=ax_main, normalize=_p.get('normalize', False), overflow=_p.get('overflow', True))
     mc_args   = dict(df=mc_df,  var=var, bins=bins, ax=ax_main, hist_filled=True,  error_legend=False, scale=scale_nu,  config=config, **kwargs)
-    # hnl uses default False for percents and counts unless the caller overrides them
+    # HNL step: counts/percents are display-scaled by an arbitrary scale_hnl, so the
+    # numbers aren't physically meaningful -- always suppressed, regardless of caller kwargs.
     hnl_args  = {**dict(df=hnl_df, var=var, bins=bins, ax=ax_main, hist_filled=False, error_legend=True, scale=scale_hnl, config=config, **kwargs),
-                 'percents': kwargs.get('percents', False), 'counts': kwargs.get('counts', False)}
+                 'percents': False, 'counts': False}
+    if hnl_categories is not None:
+        hnl_args['categories'] = hnl_categories
 
     data_hist, data_err, data_plot = data_plot_overlay(**data_args)
     mc_bins, mc_steps, mc_err, mc_dict = plot_var(**mc_args)
@@ -1017,10 +1027,14 @@ def plot_mc_hnl(mc_df: pd.DataFrame,
                 log_y: bool = False,
                 show_fom: bool = False,
                 fom_nsigma: float = 1.0,
+                hnl_categories: dict | None = None,
                 **kwargs) -> tuple[plt.Figure, plt.Axes]:
     """MC BNB stacked histogram + HNL step overlay, without data points.
 
-    Pass ``categories=signal_categories_hnl`` to stack by the HNL signal/background scheme.
+    Pass ``categories=signal_categories_hnl`` to stack by the HNL signal/background scheme
+    for the MC stack. The HNL step uses ``hnl_categories`` if given, else falls back to the
+    same ``categories`` -- pass a narrowed ``hnl_categories`` (e.g. just the ``hnl`` entry)
+    to avoid every category being iterated (and potentially legended) by both calls.
     """
     if show_fom:
         fig = plt.figure(figsize=(figsize[0], figsize[1] + 2))
@@ -1033,6 +1047,8 @@ def plot_mc_hnl(mc_df: pd.DataFrame,
 
     mc_args  = dict(df=mc_df,  var=var, bins=bins, ax=ax, hist_filled=True,  error_legend=False, scale=scale_nu,  **kwargs)
     hnl_args = dict(df=hnl_df, var=var, bins=bins, ax=ax, hist_filled=False, error_legend=True,  scale=scale_hnl, **kwargs)
+    if hnl_categories is not None:
+        hnl_args['categories'] = hnl_categories
 
     mc_bins, mc_steps, mc_err, mc_dict = plot_var(**mc_args)
     _, hnl_steps, hnl_err, hnl_dict   = plot_var(**hnl_args)
