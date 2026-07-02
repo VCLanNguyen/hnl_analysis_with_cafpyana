@@ -822,6 +822,8 @@ def plot_mc_hnl_data(mc_df: pd.DataFrame,
         The syst dict returned by :func:`plot_var` for the MC stack.
     hnl_dict : dict
         The syst dict returned by :func:`plot_var` for the HNL overlay.
+    dt_dict : dict
+        ``{'bins', 'counts', 'total_err'}`` for the data overlay.
     """
     _p = {f.name: getattr(config, f.name) for f in _dc_fields(config)} if config is not None else {}
     _p.update(kwargs)
@@ -992,10 +994,16 @@ def plot_mc_hnl_data(mc_df: pd.DataFrame,
     hnl_dict['counts'] = hnl_steps[-1][1:]  # last step contains the total HNL counts
     hnl_dict['total_err'] = hnl_err
 
+    dt_dict = {
+        'bins': mc_bins,
+        'counts': data_hist,
+        'total_err': data_err,
+    }
+
     if savefig != "":
         plt.savefig(savefig, bbox_inches='tight')
 
-    return fig, ax_main, ax_sub, mc_dict, hnl_dict
+    return fig, ax_main, ax_sub, mc_dict, hnl_dict, dt_dict
 
 
 def plot_mc_hnl(mc_df: pd.DataFrame,
