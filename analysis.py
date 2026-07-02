@@ -54,6 +54,7 @@ __all__ = [
     'RHO', 'N_A', 'M_AR', 'V_SBND', 'NTARGETS',
     # categories
     'signal_categories', 'signal_categories_external', 'signal_dict',
+    'signal_categories_hnl', 'signal_dict_hnl',
     'generic_categories', 'generic_dict',
     'pdg_categories', 'pdg_dict',
     'mode_categories', 'mode_dict',
@@ -124,6 +125,23 @@ generic_categories = {
     "cosmic": {"value": 4, "label": "cosmic",        "color": "C7"},
 }
 generic_dict = {k: v["value"] for k, v in generic_categories.items()}
+
+# HNL analysis: signal == 0 is the desired topology (HNL, including HNL cosmic).
+# Colors are the Sheffield palette used by the original HNL plotting code.
+signal_categories_hnl = {
+    "hnl":          {"value": 0,  "label": "HNL",                     "color": "#E7004C"},  # Coral
+    "CCpi0":        {"value": 1,  "label": r"CC$\nu$$\pi^0$",         "color": "#00CE7C"},  # MintGreen
+    "NCpi0":        {"value": 2,  "label": r"NC$\nu$$\pi^0$",         "color": "#FF6371"},  # Flamingo
+    "othernumuCC":  {"value": 3,  "label": r"Other CC $\nu_\mu$",     "color": "#005A8F"},  # Teal
+    "otherNC":      {"value": 4,  "label": r"Other NC $\nu$",         "color": "#DAA8E2"},  # Lavender
+    "CCnue":        {"value": 5,  "label": r"CC $\nu_e$",             "color": "#00BBCC"},  # Aqua
+    "nonFV":        {"value": 6,  "label": r"Non-FV $\nu$",           "color": "#FF9664"},  # Peach
+    "dirt":         {"value": 7,  "label": r"Dirt $\nu$",             "color": "#8B6969"},  # RosyBrown4
+    "cosmic":       {"value": 8,  "label": "Cosmic",                  "color": "#708090"},  # SlateGray
+    "offbeam":      {"value": 9,  "label": "Offbeam",                 "color": "#D0D2D4"},  # LightGray
+    "hnlcosmic":    {"value": 10, "label": "HNL Cosmic",              "color": "#131E29"},  # MidnightBlack
+}
+signal_dict_hnl = {k: v["value"] for k, v in signal_categories_hnl.items()}
 
 # PDG categories for plotting. The 5 named entries use pdg-code filtering; the 4
 # extras (pdg=None) use filter-based population selection. Insertion order matters:
