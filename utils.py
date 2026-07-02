@@ -1,9 +1,14 @@
-"""Generic DataFrame utilities."""
+"""Generic DataFrame and histogram utilities."""
+from __future__ import annotations
+
+import numpy as np
 import pandas as pd
 from math import floor, log10
 from pyanalib.pandas_helpers import *
 
 from . import config
+
+__all__ = ['ensure_lexsorted', 'merge_hdr', 'apply_event_mask', 'digitize_with_overflow', 'get_hist1d', 'get_hist2d', 'flux_pot_weights', 'sci_notation']
 
 def ensure_lexsorted(frame, axis):
     """Ensure DataFrame axes are fully lexsorted when using MultiIndex.
@@ -29,15 +34,11 @@ def ensure_lexsorted(frame, axis):
         return frame.sort_index(axis=axis)
     return frame
 
-# Define function for string formatting of scientific notation
 def sci_notation(num, decimal_digits=1, precision=None, exponent=None):
-    """
-    Returns a string representation of the scientific
-    notation of the given number formatted for use with
-    LaTeX or Mathtext, with specified number of significant
-    decimal digits and precision (number of decimal digits
-    to show). The exponent to be used can also be specified
-    explicitly.
+    """Returns a string representation of the scientific notation of the given
+    number formatted for use with LaTeX or Mathtext, with specified number of
+    significant decimal digits and precision (number of decimal digits to
+    show). The exponent to be used can also be specified explicitly.
     """
     if exponent is None:
         exponent = int(floor(log10(abs(num))))
@@ -46,31 +47,44 @@ def sci_notation(num, decimal_digits=1, precision=None, exponent=None):
         precision = decimal_digits
 
     return r"${0:.{2}f}\times10^{{{1:d}}}$".format(coeff, exponent, precision)
-def merge_hdr(hdr_df,df):
-    """Merge header DataFrame with main DataFrame on entry and __ntuple.
-    
+
+
+def merge_hdr(hdr_df, df):
+    """Add header columns (run/subrun/evt) to main DataFrame by index join.
+
+    Performs a left join on the shared index, so hdr_df values are broadcast
+    to all matching rows in df (handles the many-slices-per-event case).
+    More memory-efficient than the original multicol_merge: no reset_index
+    copies, no merge-key hashing on flat columns.
+
     Parameters
     ----------
     hdr_df : pandas.DataFrame
-        DataFrame containing header information with columns including '__ntuple' and 'entry'.
+        Header DataFrame with run, subrun, evt (and optionally file_idx) columns,
+        indexed by (__ntuple, entry).
     df : pandas.DataFrame
-        Main DataFrame containing event data with columns including '__ntuple' and 'entry'.
+        Main event DataFrame indexed by (__ntuple, entry), possibly with
+        multiple rows per event (slices).
+
     Returns
     -------
     pandas.DataFrame
-        Merged DataFrame containing all columns from both hdr_df and df, merged on '__ntuple' and 'entry'.
-    Notes
-    -----
-    - The merge is performed on the columns '__ntuple' and 'entry', which are expected to be present in both DataFrames.
-    - The function ensures that both DataFrames are lexsorted on the relevant columns before merging to avoid performance issues with MultiIndex.
+        df with run/subrun/evt (and file_idx if present) columns appended.
     """
-    nlevels = df.index.nlevels 
-    hdr_cols = ['__ntuple','entry','run','subrun','evt']
-    return multicol_merge(ensure_lexsorted(hdr_df.reset_index(),axis=1)[hdr_cols],
-                          ensure_lexsorted(df.reset_index(),axis=1),
-                          on = [tuple(['__ntuple'] + (nlevels-1)*['']),
-                                tuple(['entry']    + (nlevels-1)*['']),]
-                          )
+    add_cols = ['run', 'subrun', 'evt']
+    if 'file_idx' in hdr_df.columns:
+        add_cols.append('file_idx')
+
+    hdr_subset = hdr_df[add_cols]
+    col_depth = df.columns.nlevels
+    if col_depth > 1:
+        hdr_subset = hdr_subset.copy()
+        hdr_subset.columns = pd.MultiIndex.from_tuples(
+            [tuple([c] + [''] * (col_depth - 1)) for c in add_cols]
+        )
+
+    result = df.join(hdr_subset)
+    return ensure_lexsorted(ensure_lexsorted(result, axis=0), axis=1)
 
 def apply_event_mask(df: pd.DataFrame, event_mask: str | None = None) -> pd.DataFrame:
     """ Apply event mask filter to DataFrame.
@@ -108,3 +122,125 @@ def apply_event_mask(df: pd.DataFrame, event_mask: str | None = None) -> pd.Data
     if event_mask == "background":
         return df[df.signal != 0]
     return df
+
+
+# ---------------------------------------------------------------------------
+# Histogram utilities
+# ---------------------------------------------------------------------------
+
+def digitize_with_overflow(data, bins):
+    """Return 0-based bin indices with nan/inf/overflow clipped into edge bins.
+
+    Values below ``bins[0]`` map to index 0; values at or above ``bins[-1]``
+    map to index ``len(bins)-2`` (the last bin).  NaN and ±inf are treated as
+    edge-bin values rather than raising or producing out-of-range indices.
+
+    Parameters
+    ----------
+    data : array-like
+        Values to digitize.
+    bins : np.ndarray
+        Monotonically increasing bin edges.
+
+    Returns
+    -------
+    np.ndarray of int
+        0-based bin indices, shape ``(len(data),)``.
+    """
+    a = np.asarray(data, dtype=float)
+    a = np.nan_to_num(a, nan=bins[-1]-1e-10, posinf=bins[-1]-1e-10, neginf=bins[0])
+    n_bins = len(bins) - 1
+    return np.clip(np.searchsorted(bins, np.clip(a, bins[0], bins[-1]-1e-10), side='right') - 1,
+                   0, n_bins - 1)
+
+
+def flux_pot_weights(df: pd.DataFrame, mcbnb_pot: float, integrated_flux: float) -> np.ndarray:
+    """Return flux+POT normalized per-event weights from ``weights_mc``.
+
+    Equivalent to the per-row formula::
+
+        flux_pot_norm = weights_mc / (integrated_flux * mcbnb_pot / 1e6)
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        DataFrame carrying a ``weights_mc`` column.
+    mcbnb_pot : float
+        Reference BNB POT for the sample.
+    integrated_flux : float
+        Integrated nue flux in cm⁻² (from :data:`nueana.analysis.integrated_flux`).
+    """
+    return df.weights_mc.values / (integrated_flux * (mcbnb_pot / 1e6))
+
+
+def get_hist1d(weights=None, data=None, bins=None, overflow=True, **kwargs):
+    """1D histogram with optional overflow handling.
+
+    Parameters
+    ----------
+    weights : np.ndarray, optional
+        Per-event weights. If None, uses uniform weights of 1.0 for all events.
+    data : np.ndarray
+        Data values to histogram.
+    bins : np.ndarray
+        Bin edges.
+    overflow : bool, optional
+        If True (default), values above bins[-1] are clipped into the last bin.
+        Non-finite values are assigned to edge bins. If False, standard numpy
+        behavior with no clipping.
+    **kwargs
+        Passed to np.histogram().
+
+    Returns
+    -------
+    np.ndarray
+        Histogram counts of shape (len(bins)-1,).
+    """
+    if weights is None:
+        weights = np.ones(len(data))
+    if overflow:
+        idx = digitize_with_overflow(data, bins)
+        return np.bincount(idx, weights=weights, minlength=len(bins)-1).astype(float)
+    else:
+        return np.histogram(data, bins=bins, weights=weights, **kwargs)[0]
+
+
+def get_hist2d(weights=None, x=None, y=None, bins=None, overflow=True, **kwargs):
+    """2D histogram with optional overflow handling on both axes.
+
+    Parameters
+    ----------
+    weights : np.ndarray, optional
+        Per-event weights. If None, uses uniform weights of 1.0 for all events.
+    x : np.ndarray
+        X-axis data values.
+    y : np.ndarray
+        Y-axis data values.
+    bins : np.ndarray or list of two np.ndarray
+        Bin edges. Pass a 2-element list ``[x_bins, y_bins]`` for different axes.
+    overflow : bool, optional
+        If True (default), values outside the bin range are clipped into edge
+        bins on both axes. If False, standard numpy behavior.
+    **kwargs
+        Passed to np.histogram2d().
+
+    Returns
+    -------
+    np.ndarray
+        2D histogram counts of shape (len(x_bins)-1, len(y_bins)-1).
+    """
+    if isinstance(bins, (list, tuple)) and len(bins) == 2 and not np.isscalar(bins[0]) and not np.isscalar(bins[1]):
+        x_bins, y_bins = bins
+    else:
+        x_bins = y_bins = bins
+    if weights is None:
+        weights = np.ones(len(x))
+    if overflow:
+        n_x = len(x_bins) - 1
+        n_y = len(y_bins) - 1
+        xi = digitize_with_overflow(x, x_bins)
+        yi = digitize_with_overflow(y, y_bins)
+        flat = xi * n_y + yi
+        return np.bincount(flat, weights=weights, minlength=n_x * n_y).reshape(n_x, n_y).astype(float)
+    else:
+        return np.histogram2d(x, y, bins=[x_bins, y_bins], weights=weights, **kwargs)[0]

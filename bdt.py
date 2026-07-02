@@ -13,6 +13,8 @@ from sklearn.metrics import (roc_auc_score, accuracy_score, precision_score,
                              classification_report, roc_curve,
                              average_precision_score)
 
+from .analysis import signal_categories_hnl
+
 # ── Feature columns (MultiIndex tuples → flat name) ──────────────────────────
 # 1-shower topology
 FEAT_1SHW = {
@@ -685,25 +687,22 @@ def eval_bdt(model,
         hnl_sel = hnl_df[np.array(mh_plot)]
         sm_sel  = sm_df[np.array(ms_plot)]
 
-        # Temporarily update the global HNL legend label used by plot_var
-        from . import plotting as _plt_mod
-        _old_label = _plt_mod.signal_labels[0]
-        _plt_mod.signal_labels[0] = hnl_label
+        # Relabel the HNL entry for this plot only (local dict copy; no global mutation).
+        _categories = plot_kwargs.pop('categories', signal_categories_hnl)
+        _categories = {**_categories, 'hnl': {**_categories['hnl'], 'label': hnl_label}}
         # Merge legend_kwargs: force ncol=1 unless caller overrides it
         _lkw = {'ncol': 1, **plot_kwargs.pop('legend_kwargs', {})}
-        try:
-            fig, ax = plot_mc_hnl(
-                mc_df         = sm_sel,
-                hnl_df        = hnl_sel,
-                var           = plot_var,
-                bins          = plot_bins,
-                scale_nu      = scale_nu,
-                scale_hnl     = scale_hnl,
-                legend_kwargs = _lkw,
-                **plot_kwargs,
-            )
-        finally:
-            _plt_mod.signal_labels[0] = _old_label
+        fig, ax = plot_mc_hnl(
+            mc_df         = sm_sel,
+            hnl_df        = hnl_sel,
+            var           = plot_var,
+            bins          = plot_bins,
+            scale_nu      = scale_nu,
+            scale_hnl     = scale_hnl,
+            categories    = _categories,
+            legend_kwargs = _lkw,
+            **plot_kwargs,
+        )
 
         ax.set_title(f'{hnl_label} — BDT score ≥ {bdt_cut_plot}')
         plt.show()

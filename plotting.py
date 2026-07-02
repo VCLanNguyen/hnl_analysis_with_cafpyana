@@ -1,13 +1,16 @@
-"""Useful plotting helpers for nueana: stacked MC, PDG breakdowns, and data overlays.
+"""Plotting helpers for nueana: stacked MC, PDG/mode breakdowns, and data overlays.
 
-This module provides:
-- plot_var: unified function to plot either signal-type stacks or PDG-type stacks.
-- data_plot_overlay: draw data points with Poisson errors on top of MC stacks.
-- plot_mc_data: convenience function that builds an MC+data figure with ratio subplot.
+Functions
+---------
+plot_var : unified stacked histogram — signal types, PDG, interaction mode, or generic.
+data_plot_overlay : data points with Poisson errors for overlaying on MC stacks.
+plot_mc_data : combined MC+data figure with ratio subplot and chi-sq annotation.
 
-All functions accept both plain and MultiIndex DataFrames (the code will attempt to
-ensure lexsorted axes via ``ensure_lexsorted`` imported from ``.utils``).
+All functions accept plain and MultiIndex DataFrames. Style and display options can
+be bundled into a :class:`~nueana.classes.PlottingConfig` instance and passed as
+``config``; keyword arguments take priority over the config.
 """
+from __future__ import annotations
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -15,49 +18,78 @@ import matplotlib as mpl
 from matplotlib.gridspec import GridSpec
 import pandas as pd
 import warnings
+from dataclasses import fields as _dc_fields
+try:
+    from scipy.stats import chi2 as chi2_dist
+except Exception:
+    chi2_dist = None
 
-from .constants import signal_dict, signal_labels, pdg_dict, signal_colors, generic_dict, generic_labels, generic_colors
+__all__ = [
+    'annotate_sbnd',
+    'plot_var',
+    'plot_var_pdg',
+    'data_plot_overlay',
+    'plot_mc_data',
+    'plot_mc_hnl_data',
+    'plot_mc_hnl',
+    'plot_detvar',
+    'plot_syst_category_breakdown',
+    'plot_syst_breakdown',
+]
+
+from .analysis import (signal_dict, signal_categories, signal_categories_external,
+                       signal_categories_hnl,
+                       generic_dict, generic_categories,
+                       pdg_categories,
+                       mode_dict, mode_categories,
+                       integrated_flux)
 from .utils import ensure_lexsorted
-from .syst import *
-from .histogram import *
+from .syst import get_syst
+from .utils import get_hist1d
+from .classes import PlottingConfig, VariableConfig, SystematicsInput, SystematicsOutput
 
-def annotate_internal(ax):
-    ax.annotate("SBND Internal", xy=(0.0, 1.02), xycoords='axes fraction', ha='left',color='gray',fontweight='bold')
+def _clipped_minor_locator(xmin, xmax):
+    """AutoMinorLocator whose ticks are clipped to [xmin, xmax].
+
+    Keeps the visual axis margin intact while preventing minor ticks
+    from appearing in the margin area outside the data range.
+    """
+    class _L(mpl.ticker.AutoMinorLocator):
+        def __call__(self):
+            locs = super().__call__()
+            return locs[(locs >= xmin) & (locs <= xmax)]
+    return _L()
+
+def annotate_sbnd(ax, internal=True):
+    """Stamp a status label in the upper-left and the tune label in the upper-right of *ax*.
+
+    Parameters
+    ----------
+    internal : bool, default True
+        If True, stamp "SBND Internal". If False, stamp "SBND Analysis In Progress".
+    """
+    label = "SBND Internal" if internal else "SBND Analysis In Progress"
+    ax.annotate(label, xy=(0.0, 1.02), xycoords='axes fraction', ha='left', color='gray', fontweight='bold')
+    # ax.annotate("GENIE v3.40 AR23_00i_00_000", xy=(1.0, 1.02), xycoords='axes fraction', ha='right', color='gray')
 
 def plot_var(df: pd.DataFrame,
              var: tuple | str,
              bins: np.ndarray,
              ax = None,
-             xlabel: str = "",
-             ylabel: str = "",
-             title: str = "",
-             counts: bool = False,
-             percents: bool = False,
-             scale: float = 1.0,
-             normalize: bool = False,
-             mult_factor: float = 1.0,
-             cut_val: list[float] | None = None,
-             plot_err: bool = True,
-             systs: bool | np.ndarray = None,
-             pdg: bool = False,
-             pdg_col: tuple | str = 'pfp_shw_truth_p_pdg',
-             hatch: list[str] | None = None,
-             bin_labels : list[str] | None = None,
-             generic: bool = False,
-             overflow: bool = True,
-             hist_filled: bool = True,
-             error_legend: bool = True,
-             legend_kwargs: dict | None = None,
-             
+             config: PlottingConfig | None = None,
+             **kwargs,
              ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Plot a variable as stacked histograms for signal categories or PDG types.
+    """Plot a variable as stacked histograms, selectable by category type.
 
-    This function supports three modes controlled by ``pdg`` and ``generic``:
-    - pdg=False, generic=False (default): stack by interaction type using ``signal_dict``.
-    - pdg=True: stack by particle PDG using ``pdg_dict``; adds 'cosmic' and
-      'other' as the last two categories.
-    - generic=True: stack by broad category using ``generic_dict`` (nuFV, nonFV,
-      dirt, cosmic). Takes precedence over ``pdg`` if both are True.
+    Category mode is controlled by ``generic``, ``pdg``, and ``mode`` (checked in
+    that priority order):
+
+    - default: stack by interaction type (``signal_categories``).
+    - ``categories=<dict>``: use any custom category dict, including ``generic_categories``,
+      ``signal_categories_external``, or a user-defined scheme. Entries may carry either
+      ``"value"`` (int) or ``"values"`` (list of ints) for multi-signal-type merging.
+    - ``pdg=True``: stack by leading-particle PDG code (``pdg_categories``).
+    - ``mode=True``: stack by GENIE interaction mode (``mode_categories``).
 
     Parameters
     ----------
@@ -69,6 +101,9 @@ def plot_var(df: pd.DataFrame,
         Bin edges for the histogram.
     ax : matplotlib.axes.Axes, optional
         Axis to draw on. If None the current axis is used.
+    config : PlottingConfig, optional
+        Style/display options bundled into a dataclass. Keyword arguments take
+        priority over any field set in ``config``.
     xlabel : str, optional
         X axis label. Defaults to the variable name when empty.
     ylabel : str, optional
@@ -77,267 +112,349 @@ def plot_var(df: pd.DataFrame,
         Plot title. Defaults to the variable name when empty.
     counts : bool, default False
         If True, append event counts to legend labels.
+    percents : bool, default False
+        If True, append percentage-of-total to legend labels.
     scale : float, default 1.0
-        Scale factor applied to the histogram.
+        Scale factor applied to all histogram bins (and error arrays).
     normalize : bool, default False
-        If True, normalize histograms so integral equals 1 (uses bin widths from ``bins``).
+        If True, normalize histograms so the integral equals 1 (uses bin widths).
     mult_factor : float, default 1.0
-        Multiplicative factor applied to the first category (index 0). Intended for quick
-        visual scaling only; error propagation is not adjusted at all. 
-    cut_val : list, optional
-        List of x-values at which to draw vertical cut lines.
+        Extra multiplicative factor applied to the first category only. Intended for
+        quick visual scaling; error propagation is not adjusted.
+    cut_val : list of float, optional
+        x-values at which to draw vertical dashed cut lines.
     plot_err : bool, default True
-        If True, draw MC statistical (and optional systematic) error bands.
-    systs : bool | np.ndarray, optional
-        if True, calculates and plots systematic uncertainties stored in the input dataframe. 
-        if given as a numpy array, uses the provided values as total uncertainties 
-        (e.g. from an external calculation) and plots them without attempting to separate stat/syst.
-        if False or None, no error bands are plotted.
+        If True, draw MC error bands (stat and/or syst).
+    systs : True | SystematicsInput | SystematicsOutput | None, default None
+        Controls how uncertainties are computed and displayed:
+
+        - ``True``: read universe columns from ``df`` via :func:`~nueana.syst.get_syst`.
+          If an MCstat universe is present the combined stat+syst band is drawn; otherwise
+          stat and syst bands are drawn separately.
+        - :class:`~nueana.classes.SystematicsInput`: call :func:`~nueana.funcs.get_total_cov`
+          on-the-fly with the bundled parameters and use the resulting ``rate_cov``.
+        - :class:`~nueana.classes.SystematicsOutput`: use a pre-computed result from
+          :func:`~nueana.funcs.get_total_cov`. The POT is read from
+          ``systs.mcbnb_pot`` (set automatically by :func:`~nueana.funcs.get_total_cov`).
+        - ``None`` (default): MC stat error only (diagonal, sum-of-weights-squared).
     pdg : bool, default False
-        When True, split histograms by PDG (uses ``pdg_col``). Otherwise split by signal type.
+        Stack by PDG code rather than signal type.
     pdg_col : tuple | str, default 'pfp_shw_truth_p_pdg'
-        Column (or multi-index tuple) containing the PDG code per particle (used when ``pdg``
-        is True).
-    hatch : list, optional
-        Optional hatch patterns per category.
-    generic : bool, default False
-        When True, stack by broad category (FV neutrino, non-FV, dirt, cosmic) using
-        ``generic_dict`` / ``generic_labels`` / ``generic_colors``. Takes precedence
-        over ``pdg`` if both are True.
-    overflow : bool, optional
-        If True (default), values above bins[-1] are clipped to bins[-1] - 1e-10
-        to fold overflow into the last bin. If False, uses standard numpy histogram
-        behavior with no clipping.
-    hist_filled : bool, default True
-        If True, use filled histograms. If False, use step histograms with no fill.
-    error_legend : bool, default True
-        If True, include a legend entry of MC stat./syst. uncertainties when ``plot_err`` is True.
+        Column containing the PDG code per particle (used when ``pdg=True``).
+    mode : bool, default False
+        Stack by GENIE interaction mode.
+    mode_col : tuple | str, default ('slc', 'truth', 'genie_mode')
+        Column containing the GENIE interaction mode values (used when
+        ``mode=True``).
+    hatch : list of str, optional
+        Hatch pattern per category (must match number of categories).
+    bin_labels : list of str, optional
+        Custom tick labels placed at each bin edge.
+    categories : dict, optional
+        Custom category dict passed directly; takes priority over all flags.
+        Use ``generic_categories`` here for the broad CC/NC/non-FV/dirt/cosmic view.
+    overflow : bool, default True
+        If True, fold values above ``bins[-1]`` into the last bin.
     legend_kwargs : dict, optional
-        Dictionary of keyword arguments to pass to ax.legend(). These will override
-        the default legend settings (ncol=2, loc='upper right').
-    
+        Forwarded to ``ax.legend()``, overriding the defaults
+        ``{ncol: 2, loc: 'upper right'}``.
+
     Returns
     -------
-    bins, steps, total_err
-        - bins: the input bin edges
-        - steps: array of cumulative step values used for plotting (shape (n_categories, len(bins)))
-        - total_err: combined stat + syst per bin (length = n_bins)
+    bins : np.ndarray
+        The input bin edges (unchanged).
+    steps : np.ndarray, shape (n_categories, len(bins))
+        Cumulative step values per category used for the filled polygons.
+    total_err : np.ndarray, shape (n_bins,)
+        Per-bin total uncertainty (sqrt of diagonal of ``total_cov``).
+    syst_dict : dict
+        Per-systematic covariance matrices keyed by systematic name, plus
+        ``'__total_cov__'`` holding the full ``(n_bins, n_bins)`` combined
+        covariance (stat + syst, scaled).
     """
+    _p = {f.name: getattr(config, f.name) for f in _dc_fields(config)} if config is not None else {}
+    _p.update(kwargs)
+    xlabel        = _p.get('xlabel', '')
+    ylabel        = _p.get('ylabel', '')
+    title         = _p.get('title', '')
+    counts        = _p.get('counts', False)
+    percents      = _p.get('percents', False)
+    scale         = _p.get('scale', 1.0)
+    normalize     = _p.get('normalize', False)
+    mult_factor   = _p.get('mult_factor', 1.0)
+    cut_val       = _p.get('cut_val', None)
+    plot_err      = _p.get('plot_err', True)
+    systs         = _p.get('systs', None)
+    pdg           = _p.get('pdg', False)
+    pdg_col       = _p.get('pdg_col', 'pfp_shw_truth_p_pdg')
+    mode          = _p.get('mode', False)
+    mode_col      = _p.get('mode_col', ('slc', 'truth', 'genie_mode'))
+    hatch         = _p.get('hatch', None)
+    bin_labels    = _p.get('bin_labels', None)
+    overflow      = _p.get('overflow', True)
+    legend_kwargs = _p.get('legend_kwargs', None)
+    internal      = _p.get('internal', True)
+    custom_cats   = _p.get('categories', None)
     if isinstance(df, pd.DataFrame):
         df = ensure_lexsorted(df, axis=0)
         df = ensure_lexsorted(df, axis=1)
-
-    def _col_has_token(col, token: str) -> bool:
-        if isinstance(col, tuple):
-            return token in "_".join(map(str, col))
-        return token in str(col)
-
-    weight = any(_col_has_token(col, "weights_mc") for col in df.columns)
-
-    # Convert once to numpy arrays to avoid repeated pandas filtering per category.
-    var_vals = np.asarray(df[var])
-    if overflow:
-        var_vals = np.clip(var_vals, bins[0], bins[-1] - 1e-10)
-    signal_vals = np.asarray(df['signal'])
-    weights_vals = np.asarray(df['weights_mc']) if weight else None
-    abs_pdg_vals = np.abs(np.asarray(df[pdg_col])) if pdg else None
     
-    colors = generic_colors if generic else signal_colors
+    weight = False
+    for col in df.columns:
+        if "weights_mc" in "".join(list(col)):
+          weight=True
+          break
+    
     if ax is None: ax = plt.gca()
-    category_dict = generic_dict if generic else (pdg_dict if pdg else signal_dict)
-    category_labels = generic_labels if generic else signal_labels
-    ncategories = len(generic_dict) if generic else (len(pdg_dict)+3 if pdg else len(signal_dict))
+    if custom_cats is not None: categories = custom_cats
+    elif pdg:      categories = pdg_categories
+    elif mode:     categories = mode_categories
+    else:          categories = signal_categories
+    ncategories = len(categories)
     if hatch == None: hatch = [""]*ncategories
     alpha = 0.25 if pdg else 0.4
     
     hists       = np.zeros((ncategories,len(bins)-1)) # this is for storing the histograms
     steps       = np.zeros((ncategories,len(bins))) # this is for plotting
-    stats_var   = np.zeros((ncategories,len(bins)-1))
     bin_widths  = np.diff(bins)
     
+    stats       = np.zeros(len(bins)-1)
     stats_err   = np.zeros(len(bins)-1)
     systs_err   = np.zeros(len(bins)-1)
-    
-    # Check if systs is provided as array (already includes stats)
-    systs_is_array = isinstance(systs, np.ndarray)
+    total_cov   = np.zeros((len(bins)-1, len(bins)-1))
 
-    if pdg==False:
-        for i, entry in enumerate(category_dict):
-            this_cat = category_dict[entry]
-            cat_mask = (signal_vals == this_cat)
-            cat_weights = weights_vals[cat_mask] if weight else None
-            hists[i] = np.histogram(var_vals[cat_mask], bins=bins, weights=cat_weights)[0]
-            if weight:
-                stats_var[i] = np.histogram(var_vals[cat_mask], bins=bins, weights=cat_weights**2)[0]
+    if (pdg==False) & (mode==False):
+        for i, (key, entry) in enumerate(categories.items()):
+            vals = entry["values"] if "values" in entry else [entry["value"]]
+            mask = df.signal.isin(vals)
+            hists[i] = get_hist1d(data=df[mask][var],
+                                  weights=df[mask]['weights_mc'] if weight else None,
+                                  bins=bins, overflow=overflow)
+            
+    elif mode:
+        this_nu    = df[df[mode_col] == df[mode_col]]
+        this_other = df[df[mode_col] != df[mode_col]]
+        for i, (key, entry) in enumerate(categories.items()):
+            if entry["value"] is not None:
+                this_cat = entry["value"]
+                hists[i] = get_hist1d(data=df[df[mode_col]==this_cat][var],
+                                      weights=df[df[mode_col]==this_cat]['weights_mc'] if weight else None,
+                                      bins=bins, overflow=overflow)
+                this_nu = this_nu[this_nu[mode_col] != this_cat]
+            elif entry["filter"] == "other_nu":
+                hists[i] = get_hist1d(data=this_nu[var],
+                                      weights=this_nu['weights_mc'] if weight else None,
+                                      bins=bins, overflow=overflow)
+            elif entry["filter"] == "non_nu":
+                hists[i] = get_hist1d(data=this_other[var],
+                                      weights=this_other['weights_mc'] if weight else None,
+                                      bins=bins, overflow=overflow)
+    else:
+        process_col = tuple(list(pdg_col)[:-1] + ['start_process']) 
+        # other_df stores any particles that we don't specify the pdg of
+        this_nu_df      = df[df.signal <  signal_dict['cosmic']]#.sort_index()
+        this_cosmic_df  = df[df.signal == signal_dict['cosmic']]#.sort_index()
+        this_offbeam_df = df[df.signal == signal_dict['offbeam']]#.sort_index()
+        # really only want to see electrons that are
+        # primaries from a FV neutrino interaction
+        where_notprim = ((abs(this_nu_df[pdg_col])==11) & 
+                          (this_nu_df[process_col] != 0)) 
+        this_notprim_df   = this_nu_df[where_notprim]
+        this_nu_df         = this_nu_df[~where_notprim]
+        this_other         = this_nu_df.copy()
+        
+        _pdg_populations = {
+            "notprim": this_notprim_df,
+            "cosmic":   this_cosmic_df,
+            "offbeam":  this_offbeam_df,
+        }
+        for i, (key, entry) in enumerate(categories.items()):
+            if entry["pdg"] is not None:
+                pdg_value = entry["pdg"]
+                pdg_df = this_nu_df[abs(this_nu_df[pdg_col])==pdg_value].sort_index()
+                hists[i] = get_hist1d(data=pdg_df[var],
+                                      weights=pdg_df['weights_mc'] if weight else None,
+                                      bins=bins, overflow=overflow)
+                this_other = this_other[abs(this_other[pdg_col])!=pdg_value]
             else:
-                stats_var[i] = hists[i]
-    else: 
-        nu_mask = signal_vals < signal_dict['cosmic']
-        cosmic_mask = signal_vals == signal_dict['cosmic']
-        offbeam_mask = signal_vals == signal_dict['offbeam']
-        # "other" starts from nu entries then removes known PDGs.
-        other_mask = nu_mask.copy()
-
-        for i, key in enumerate(list(pdg_dict.keys())):
-            pdg_value = pdg_dict[key]['pdg']
-            pdg_mask = nu_mask & (abs_pdg_vals == pdg_value)
-            cat_weights = weights_vals[pdg_mask] if weight else None
-            hists[i] = np.histogram(var_vals[pdg_mask], bins=bins, weights=cat_weights)[0]
-            if weight:
-                stats_var[i] = np.histogram(var_vals[pdg_mask], bins=bins, weights=cat_weights**2)[0]
-            else:
-                stats_var[i] = hists[i]
-            other_mask &= (abs_pdg_vals != pdg_value)
-
-        other_weights = weights_vals[other_mask] if weight else None
-        cosmic_weights = weights_vals[cosmic_mask] if weight else None
-        offbeam_weights = weights_vals[offbeam_mask] if weight else None
-        hists[-1] = np.histogram(var_vals[other_mask], bins=bins, weights=other_weights)[0]
-        hists[-2] = np.histogram(var_vals[offbeam_mask], bins=bins, weights=offbeam_weights)[0]
-        hists[-3] = np.histogram(var_vals[cosmic_mask], bins=bins, weights=cosmic_weights)[0]
-        if weight:
-            stats_var[-1] = np.histogram(var_vals[other_mask], bins=bins, weights=other_weights**2)[0]
-            stats_var[-2] = np.histogram(var_vals[offbeam_mask], bins=bins, weights=offbeam_weights**2)[0]
-            stats_var[-3] = np.histogram(var_vals[cosmic_mask], bins=bins, weights=cosmic_weights**2)[0]
-        else:
-            stats_var[-1] = hists[-1]
-            stats_var[-2] = hists[-2]
-            stats_var[-3] = hists[-3]
+                filt = entry["filter"]
+                pop = _pdg_populations.get(filt, this_other if filt == "other_nu" else None)
+                if pop is not None and len(pop) != 0:
+                    hists[i] = get_hist1d(data=pop[var],
+                                          weights=pop['weights_mc'] if weight else None,
+                                          bins=bins, overflow=overflow)
     
+    # Verify every row in df contributed to exactly one category bin.
+    # Mismatched filter keys, unhandled signal values, or accidental row drops
+    # will show up here before they silently skew the ratio or chi-sq.
+    _expected_total = get_hist1d(data=df[var],
+                                 weights=df['weights_mc'] if weight else None,
+                                 bins=bins, overflow=overflow)
+    _actual_total = np.sum(hists, axis=0)
+    if np.sum(_expected_total) > 0 and not np.isclose(
+        np.sum(_actual_total), np.sum(_expected_total), rtol=1e-5
+    ):
+        _missing_frac = 1.0 - np.sum(_actual_total) / np.sum(_expected_total)
+        warnings.warn(
+            f"plot_var: {abs(_missing_frac):.1%} of weighted events are unaccounted for "
+            f"({'over' if _missing_frac < 0 else 'under'}-counted). "
+            "Check that all category filter keys and signal values cover the full DataFrame.",
+            stacklevel=2,
+        )
+
     # ! THIS ASSUMES that the PDG of interest and the signal type of interest are both index 0
     # ! e.g. for nueCC (signal==0), e- is the first entry in the pdg_dict
-    hists    *= scale 
+    hists    *= scale
     hists[0] = mult_factor*hists[0]
-
-    stats_var *= scale**2
-    stats_var[0] *= mult_factor**2
 
     # storing the sum of each category in case we want to display it
     hist_counts = np.sum(hists,axis=1)
-    total_hist_count = np.sum(hist_counts)
 
-    # check if systematic cols are inside the df
-    found_systs = False
-    if (systs_is_array == False) and (systs == True):
-        found_systs = any(_col_has_token(col, "univ_") for col in df.columns)
-        
-    if systs_is_array:
-        # systs array already includes statistical uncertainty
-        found_systs = True
-        systs_arr = systs
-        syst_dict = {}
-    elif (systs==True) & (found_systs): 
-        syst_dict = get_syst(indf=df,var=var,bins=bins,scale=True)
-        total_cov = np.zeros(len(bins)-1)
-        for key in syst_dict.keys():
-            total_cov += np.diag(syst_dict[key]['cov'])
-        systs_arr = np.sqrt(total_cov)
+    # --- Systematics ---
+    # Four cases, resolved before the plot loop:
+    #   SystematicsInput  → call get_total_cov on-the-fly; MCstat folded in.
+    #   SystematicsOutput → use pre-computed get_total_cov result; MCstat folded in.
+    #   True              → read universe columns from df; MCstat separate if no MCstat universe.
+    #   None/else         → MC stat error only.
+    _mcstat_err_annot = None  # populated in SystematicsInput/Output blocks when MCstat key present
+
+    def _apply_syst_output(output, hist_scale):
+        """Shared logic for SystematicsInput and SystematicsOutput paths."""
+        nonlocal _mcstat_err_annot
+        _total_cov = np.array(output.rate_cov, dtype=float, copy=True) * hist_scale**2
+        _systs_arr = np.sqrt(np.clip(np.diag(_total_cov), a_min=0.0, a_max=None))
+        _syst_dict = dict(output.rate_syst_dict)
+        _mcstat_key = next((k for k in _syst_dict if str(k).lower() == 'mcstat'), None)
+        _calc_sep   = _mcstat_key is None
+        if _mcstat_key is not None:
+            _mcstat_err_annot = np.sqrt(np.diag(_syst_dict[_mcstat_key]['cov'] * hist_scale**2)) * scale
+        return _total_cov, _systs_arr, _syst_dict, _calc_sep
+
+    if isinstance(systs, SystematicsInput) or type(systs).__name__ == 'SystematicsInput':
+        # Case 1: call get_total_cov on-the-fly with the bundled parameters.
+        from .funcs import get_total_cov
+        _output = get_total_cov(reco_df=df, reco_var=var, bins=bins, **systs.to_kwargs())
+        _hist_scale = integrated_flux * (systs.mcbnb_pot/1e6)
+        total_cov, systs_arr, syst_dict, calc_separate_mcstat = _apply_syst_output(_output, _hist_scale)
+
+    elif isinstance(systs, SystematicsOutput) or type(systs).__name__ == 'SystematicsOutput':
+        # Case 2: caller already ran get_total_cov and passes the result directly.
+        if systs.mcbnb_pot is None:
+            raise ValueError("SystematicsOutput.mcbnb_pot is not set; use get_total_cov to produce it")
+        _hist_scale = integrated_flux * (systs.mcbnb_pot/1e6)
+        total_cov, systs_arr, syst_dict, calc_separate_mcstat = _apply_syst_output(systs, _hist_scale)
+
+    elif systs is True:
+        # Case 3: inherit systematics from universe columns in the dataframe.
+        found_systs = any("univ_" in "_".join(list(col)) for col in df.columns)
+        if not found_systs:
+            print("systs=True but no universe columns found; computing stat error only")
+            syst_dict = {}
+            systs_arr = np.zeros(len(bins)-1)
+            calc_separate_mcstat = True
+        else:
+            syst_dict = get_syst(reco_df=df, reco_var=var, bins=bins, scale=False)
+            has_mcstat = any(str(k).lower() == 'mcstat' for k in syst_dict)
+            for key in syst_dict:
+                total_cov += syst_dict[key]['cov']
+            systs_arr = np.sqrt(np.clip(np.diag(total_cov), a_min=0.0, a_max=None))
+            calc_separate_mcstat = not has_mcstat
+
     else:
-        if (systs==True) & (found_systs==False):
-            print("can't find universes in the input df, ignoring systematic error bars")
-            systs=False
-        systs_arr = np.zeros(len(bins)-1)
+        # Case 4: systs=None — no systematics; only MC stat error is shown.
         syst_dict = {}
+        systs_arr = np.zeros(len(bins)-1)
+        calc_separate_mcstat = True
 
-    # Only calculate statistical error if systs not provided as array
-    if not systs_is_array:
-        stats_err = np.sqrt(np.sum(stats_var, axis=0))
+    # MC stat variance — added when not already folded into the syst covariance.
+    # For weighted MC the per-bin variance is sum(w^2); unweighted reduces to Poisson N.
+    if calc_separate_mcstat:
+        stats_var = get_hist1d(data=df[var],
+                               weights=np.square(df['weights_mc']) if weight else None,
+                               bins=bins, overflow=overflow)
+        stats_err = np.sqrt(stats_var) * scale
+        total_cov += np.diag(stats_var)
+    else:
+        stats_err = np.zeros(len(bins)-1)
 
-    # Systematic error calculation
     systs_err = systs_arr * scale
-
+    total_cov = total_cov * (scale ** 2)
     if normalize:
         total_integral = np.sum(hists * bin_widths)
         hists = hists / total_integral
-        if not systs_is_array:
+        if calc_separate_mcstat:
             stats_err = stats_err / total_integral
         systs_err = systs_err / total_integral
+        total_cov = total_cov / (total_integral ** 2)
         
-    for i in range(ncategories):
-        color = colors[i]
-        if pdg: 
-            plot_label = (list(pdg_dict.keys())+['cosmic']+['offbeam']+['other'])[i]
-            if 'cosmic' in plot_label:
-                color = colors[signal_dict['cosmic']]
-            if 'offbeam' in plot_label:
-                color = colors[signal_dict['offbeam']]
-        else: plot_label = category_labels[i]
+    for i, (key, entry) in enumerate(categories.items()):
+        color      = entry["color"]
+        plot_label = entry.get("label", key)
         if (mult_factor!= 1.0) & (i==0): plot_label +=  f" [x{mult_factor}]"
-        if counts:
-            plot_label += f" ({int(hist_counts[i]):,})" if hist_counts[i] < 1e6 else f" ({hist_counts[i]:.2e})"
-        if percents and total_hist_count > 0:
-            plot_label += f" ({hist_counts[i]/total_hist_count*100:.1f}%)"
+        if counts: plot_label += f" ({int(hist_counts[i]):,})" if hist_counts[i] < 1e6 else f"({hist_counts[i]:.2e}"
+        if percents: plot_label += f" ({hist_counts[i]/np.sum(hist_counts)*100:.1f}%)"
         bottom=steps[i-1] if i>0 else 0
         # steps needs the first entry to be repeated!
-        steps[i] = np.insert(hists[i],obj=0,values=hists[i][0]) + bottom;
-
-        #if zero contribution to histogram don't plot
-        if hist_counts[i] == 0: continue
-
-        if hist_filled:
-            ax.fill_between(bins, bottom, steps[i], step="pre", 
-                             facecolor=mpl.colors.to_rgba(color,alpha),
-                             edgecolor=mpl.colors.to_rgba(color,1.0),  
-                             lw=0.75, 
-                             hatch=hatch[i],zorder=(ncategories-i),label=plot_label)
-        else:
-            edge_baseline = steps[i-1][1:] if i > 0 else 0.0
-            ax.stairs(hists[i], bins, baseline=edge_baseline, color=color, lw=2.5,
-                      label=plot_label, zorder=(ncategories-i))
+        steps[i] = np.insert(hists[i],obj=0,values=hists[i][0]) + bottom; 
+        ax.fill_between(bins, bottom, steps[i], step="pre", 
+                         facecolor=mpl.colors.to_rgba(color,alpha),
+                         edgecolor=mpl.colors.to_rgba(color,1.0),  
+                         lw=1.5, 
+                         hatch=hatch[i],zorder=(ncategories-i),label=plot_label)
     
-    if plot_err: 
-        systs_options = {"step":"pre", "color":mpl.colors.to_rgba("gray", alpha=0.75),
-                         "lw":0.0,"facecolor":"none","hatch":"xxx",
-                         "zorder":ncategories+1}
-        
-        # fill_between needs the *first* entry to be repeated...
-        if systs_is_array:
-            # systs array already includes both stat + syst
-            min_total_err = steps[-1] - np.append(systs_err[0], systs_err)
-            pls_total_err = steps[-1] + np.append(systs_err[0], systs_err)
-            pltlabel = "MC stat.+syst." if error_legend else ""
-            ax.fill_between(bins, min_total_err, pls_total_err, **systs_options, label=pltlabel)
-        elif found_systs:
-            # Separate stat and syst bands
-            stats_options = {"step":"pre", "color":mpl.colors.to_rgba("gray", alpha=0.9),
-                             "lw":0.0,"facecolor":"none","hatch":"....",
-                             "zorder":ncategories+1}
-            min_systs_err = steps[-1]     - np.append(systs_err[0],systs_err)
-            pls_systs_err = steps[-1]     + np.append(systs_err[0],systs_err)
-            min_stats_err = min_systs_err - np.append(stats_err[0],stats_err)
-            pls_stats_err = pls_systs_err + np.append(stats_err[0],stats_err)
-            pltlabel = "MC syst" if error_legend else ""
-            ax.fill_between(bins, min_systs_err, pls_systs_err, **systs_options,label=pltlabel)
-            pltlabel = "MC stat" if error_legend else ""
-            ax.fill_between(bins, min_systs_err, min_stats_err, **stats_options,label=pltlabel)
-            ax.fill_between(bins, pls_systs_err, pls_stats_err, **stats_options)
-        else: 
-            # Only stat errors
-            stats_options = {"step":"pre", "color":mpl.colors.to_rgba("gray", alpha=0.9),
-                             "lw":0.0,"facecolor":"none","hatch":"....",
-                             "zorder":ncategories+1}
-            min_stats_err = steps[-1] - np.append(stats_err,stats_err[-1])
-            pls_stats_err = steps[-1] + np.append(stats_err,stats_err[-1])
-            pltlabel = "MC stat." if error_legend else ""
-            ax.fill_between(bins, min_stats_err, pls_stats_err, **stats_options,label=pltlabel)
+    if plot_err:
+        systs_options = {"step": "pre", "color": mpl.colors.to_rgba("gray", alpha=0.75),
+                         "lw": 0.0, "facecolor": "none", "hatch": "xxx",
+                         "zorder": ncategories + 1}
+        stats_options = {"step": "pre", "color": mpl.colors.to_rgba("gray", alpha=0.9),
+                         "lw": 0.0, "facecolor": "none", "hatch": "....",
+                         "zorder": ncategories + 1}
+
+        has_systs = np.any(systs_arr > 0)
+        # fill_between needs the first bin edge repeated
+        _systs = np.append(systs_err[0], systs_err)
+        _stats = np.append(stats_err[0], stats_err)
+
+        if has_systs:
+            # Always combine stat and syst in quadrature into a single band.
+            # When MCstat is folded into the covariance (SystematicsInput/Output),
+            # stats_err is zero so combined reduces to systs_err unchanged.
+            combined_err = np.sqrt(systs_err**2 + stats_err**2)
+            _combined = np.append(combined_err[0], combined_err)
+            ax.fill_between(bins,
+                            steps[-1] - _combined, steps[-1] + _combined,
+                            **systs_options, label="MC stat.+syst.")
+        else:
+            # systs=None — stat error only.
+            ax.fill_between(bins,
+                            steps[-1] - _stats, steps[-1] + _stats,
+                            **stats_options, label="MC stat.")
 
     cut_line_zorder = ncategories + 2
     if cut_val != None:
         for i in range(len(cut_val)):
             ax.axvline(cut_val[i],lw=2,color="gray",linestyle="--",zorder=cut_line_zorder)
     
-    # Total error is just systs_err if array provided, otherwise stat + syst
-    total_err = systs_err if systs_is_array else (stats_err + systs_err)
+    total_err = np.sqrt(np.clip(np.diag(total_cov), a_min=0.0, a_max=None))
+    syst_dict['__total_cov__']        = total_cov
+    syst_dict['__stats_err__']        = stats_err
+    syst_dict['__systs_err__']        = systs_err
+    syst_dict['__separate_errors__']  = calc_separate_mcstat
+    # MCstat for annotation: from the SystematicsInput path if available, else stats_err.
+    syst_dict['__mcstat_err__']       = _mcstat_err_annot if _mcstat_err_annot is not None else stats_err
 
-    ax.set_xlabel('_'.join(var)) if xlabel == "" else ax.set_xlabel(xlabel)
-    ax.set_ylabel("Counts")      if ylabel == "" else ax.set_ylabel(ylabel)
-    ax.set_title ('_'.join(var)) if title  == "" else ax.set_title (title)
-    #annotate_internal(ax)
+    _var_str = var if isinstance(var, str) else '_'.join(var)
+    ax.set_xlabel(_var_str) if xlabel == "" else ax.set_xlabel(xlabel, fontsize=12)
+    ax.set_ylabel("Counts") if ylabel == "" else ax.set_ylabel(ylabel, fontsize=12)
+    ax.set_title (_var_str) if title  == "" else ax.set_title (title)
+    annotate_sbnd(ax, internal=internal)
     
     if bin_labels is not None:
         ax.set_xticks(bins)
         ax.set_xticklabels(bin_labels)
-    
+    else:
+        ax.xaxis.set_minor_locator(_clipped_minor_locator(bins[0], bins[-1]))
+
     # Apply legend with custom kwargs
     default_legend_kwargs = {'ncol': 2, 'loc': 'upper right'}
     if legend_kwargs:
@@ -348,18 +465,10 @@ def plot_var(df: pd.DataFrame,
     return bins, steps, total_err, syst_dict
 
 def plot_var_pdg(**args):
-    """Backward-compatible wrapper for plotting by PDG.
+    """Backward-compatible wrapper: calls :func:`plot_var` with ``pdg=True``.
 
-    Parameters
-    ----------
-    **args : dict
-        All keyword arguments are forwarded to :func:`plot_var`. Key arguments are
-        documented there; this wrapper simply calls ``plot_var(pdg=True, **args)``.
-
-    Returns
-    -------
-    tuple
-        The same (bins, steps, total_err) tuple returned by :func:`plot_var`.
+    All keyword arguments are forwarded unchanged. See :func:`plot_var` for the
+    full parameter list and the 4-tuple return value.
     """
     return plot_var(pdg=True,**args)
 
@@ -374,23 +483,26 @@ def data_plot_overlay(df: pd.DataFrame,
     Parameters
     ----------
     df : pandas.DataFrame
-        Dataframe containing the data to plot. ``var`` must be a column name or
-        a tuple for MultiIndex columns.
+        Dataframe containing the data to plot.
     var : str | tuple
-        Column to histogram.
+        Column name (or multi-index tuple) to histogram.
     bins : array-like
         Bin edges for the histogram.
     ax : matplotlib.axes.Axes, optional
         Axis to draw on. If None the current axis is used.
     normalize : bool, default False
         If True, normalize the histogram by its integral (uses bin widths).
+    overflow : bool, default True
+        If True, fold values above ``bins[-1]`` into the last bin.
 
     Returns
     -------
-    hist, errors, plot
-        - hist: per-bin counts (or normalized values)
-        - errors: per-bin sqrt(hist) (or normalized errors)
-        - plot: the Artist returned by ax.errorbar
+    hist : np.ndarray
+        Per-bin counts (or normalized values).
+    errors : np.ndarray
+        Per-bin Poisson errors (sqrt of raw counts, then rescaled if normalized).
+    plot : matplotlib.Artist
+        The object returned by ``ax.errorbar``.
     """
     if ax is None:
         ax = plt.gca()
@@ -423,42 +535,66 @@ def plot_mc_data(mc_df: pd.DataFrame,
                  figsize: tuple[int, int] = (7, 6),
                  ratio_min: float = 0.0,
                  ratio_max: float = 2.0,
+                 annot: bool = True,
+                 data_first: bool = True,
                  savefig: str = "",
+                 config: PlottingConfig | None = None,
                  **kwargs) -> tuple[plt.Figure, plt.Axes, plt.Axes]:
-    """Create a combined MC stack + data overlay plot with data/MC ratio subplot.
+    """Create a combined MC stack + data overlay plot with a data/MC ratio subplot.
+
+    Calls :func:`plot_var` for the MC stack and :func:`data_plot_overlay` for the
+    data points, then draws a ratio panel and annotates with the integrated Data/MC
+    ratio and a chi-squared goodness-of-fit test.
 
     Parameters
     ----------
     mc_df : pandas.DataFrame
-        MC dataframe to be stacked.
+        MC dataframe passed to :func:`plot_var`.
     data_df : pandas.DataFrame
-        Dataframe containing observed data to overlay as points with errors.
+        Observed-data dataframe passed to :func:`data_plot_overlay`.
     var : str | tuple
         Column (or multi-index tuple) to histogram.
     bins : array-like
         Bin edges for the histograms.
+    bin_labels : list of str, optional
+        Custom tick labels placed at each bin edge on both axes.
     figsize : tuple, default (7, 6)
-        Figure size.
+        Figure size passed to ``plt.figure``.
     ratio_min, ratio_max : float, default (0.0, 2.0)
-        y-limits for the ratio subplot.
+        y-axis limits for the ratio subplot.
+    annot : bool, default True
+        If True, annotate the main axis with the integrated Data/MC ratio and
+        the chi-squared / p-value.
     savefig : str, optional
-        If provided, path where the figure will be saved (bbox_inches='tight').
+        If non-empty, save the figure to this path with ``bbox_inches='tight'``.
+    config : PlottingConfig, optional
+        Style/display options. Keyword arguments take priority.
     **kwargs
-        All other arguments (scale, pdg, pdg_col, xlabel, ylabel, title, counts, normalize,
-        systs, hatch, etc.) are forwarded to :func:`plot_var`.
+        Forwarded to :func:`plot_var` (e.g. ``scale``, ``pdg``, ``xlabel``,
+        ``systs``, ``hatch``, ``normalize``, ``legend_kwargs``).
 
     Returns
     -------
-    fig, ax_main, ax_sub
-        The created matplotlib Figure and the main and ratio Axes.
+    fig : matplotlib.figure.Figure
+    ax_main : matplotlib.axes.Axes
+        The upper (MC stack + data) axis.
+    ax_sub : matplotlib.axes.Axes
+        The lower (data/MC ratio) axis.
+    mc_dict : dict
+        The syst dict returned by :func:`plot_var`, including ``'__total_cov__'``.
     """
+    _p = {f.name: getattr(config, f.name) for f in _dc_fields(config)} if config is not None else {}
+    _p.update(kwargs)
+    ratio_min  = _p.get('ratio_min', ratio_min)
+    ratio_max  = _p.get('ratio_max', ratio_max)
+    data_first = _p.get('data_first', data_first)
     fig = plt.figure(figsize=figsize)
-    gs = GridSpec(2, 1, height_ratios=[6, 1], hspace=0.4)
+    gs = GridSpec(2, 1, height_ratios=[6, 1], hspace=0.05)
     ax_main = fig.add_subplot(gs[0])
-    ax_sub = fig.add_subplot(gs[1])
+    ax_sub = fig.add_subplot(gs[1], sharex=ax_main)
 
-    data_args = dict(df=data_df, var=var, bins=bins, ax=ax_main, normalize=kwargs.get('normalize', False), overflow=kwargs.get('overflow',True))
-    mc_args   = dict(df=mc_df, var=var, bins=bins, ax=ax_main, **kwargs)
+    data_args = dict(df=data_df, var=var, bins=bins, ax=ax_main, normalize=_p.get('normalize', False), overflow=_p.get('overflow', True))
+    mc_args   = dict(df=mc_df, var=var, bins=bins, ax=ax_main, config=config, **kwargs)
 
     data_hist, data_err, data_plot = data_plot_overlay(**data_args)
     mc_bins, mc_steps, mc_err, mc_dict = plot_var(**mc_args)
@@ -467,6 +603,7 @@ def plot_mc_data(mc_df: pd.DataFrame,
     
     # plot the ratio
     mc_tot = mc_steps[-1][1:]  # last step contains the total MC counts
+    fig.canvas.draw()
 
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore",message="invalid value encountered in divide")
@@ -479,143 +616,374 @@ def plot_mc_data(mc_df: pd.DataFrame,
         # shading is around unity    
         ps_err = 1 + np.append(mc_contribution[0],mc_contribution)
         ms_err = 1 - np.append(mc_contribution[0],mc_contribution)
+
+    nbins = len(bins)-1
+    mc_total_cov = mc_dict.get('__total_cov__') if isinstance(mc_dict, dict) else None
         
     bin_centers = 0.5 * (mc_bins[1:] + mc_bins[:-1])
-    nbins = len(bins)-1
     
-    ax_sub.errorbar(bin_centers, ratio, yerr=ratio_err, fmt='s', markersize=3,color='black', zorder=1e3, label='data/MC ratio')
+    ax_sub.errorbar(bin_centers, ratio, yerr=ratio_err, fmt='s', markersize=3,color='black', zorder=1e3, label='Data/Pred ratio')
     # fill_between needs last entry to be repeated 
-    ax_sub.fill_between(mc_bins,ms_err, ps_err, step="pre", color=mpl.colors.to_rgba("gray", alpha=0.4), lw=0.0, label='MC err.')
+    ax_sub.fill_between(mc_bins,ms_err, ps_err, step="pre", color=mpl.colors.to_rgba("gray", alpha=0.4), lw=0.0, label='Pred err.')
     
     ax_sub.axhline(1, color='red', linestyle='--', linewidth=1, zorder=0,label="y=1.0")
     ax_sub.set_xlim(xmin, xmax)
     ax_sub.set_ylim(ratio_min, ratio_max)
-    ax_sub.set_ylabel("Data/MC")
-    ax_sub.legend(loc='upper center', bbox_to_anchor=(0.5, 1.5),
-                  ncol=3,fontsize='small',frameon=False)
-    cut_val = kwargs.get('cut_val', None)
+    ax_sub.set_ylabel("Data/Pred")
+    # Move xlabel to ratio panel and suppress top-panel x-axis tick labels.
+    ax_sub.set_xlabel(ax_main.get_xlabel(), fontsize=12)
+    ax_main.set_xlabel("")
+    plt.setp(ax_main.get_xticklabels(), visible=False)
+    ax_main.tick_params(axis='x', which='both', bottom=True, top=False)
+    # ax_sub.legend(loc='upper center', bbox_to_anchor=(0.5, 1.4),
+                #   ncol=3, fontsize='small', frameon=False)
+
+    cut_val = _p.get('cut_val', None)
     if cut_val is not None:
         for cut in cut_val:
             # ax_main.axvline(cut, color='black', linestyle='--', linewidth=2, alpha=0.5, zorder=1e2)
             ax_sub.axvline (cut, color='black', linestyle='--', linewidth=2, alpha=0.5, zorder=1e2)
 
-    #add things to dict to be returned for later use if needed
-    mc_dict['bins'] = mc_bins
-    mc_dict['counts'] = mc_steps[-1][1:]  # last step contains the total MC counts
-    mc_dict['total_err'] = mc_err
-    
+    total_data = np.sum(data_hist)
+    total_mc   = np.sum(mc_tot)
+    total_ratio = total_data / total_mc
+
+    # MC covariance matrix — full 2D when cases 1/2 were used in plot_var,
+    # diagonal stat-only for case 3.
+    has_full_cov = isinstance(mc_total_cov, np.ndarray) and mc_total_cov.shape == (nbins, nbins)
+    mc_cov = mc_total_cov if has_full_cov else np.diag(np.square(mc_err))
+
+    # Combined covariance for chi-sq: data (Poisson diagonal) + MC.
+    data_cov   = np.diag(np.square(data_err))
+    counts_cov = data_cov + mc_cov
+
+    # Integrated ratio uncertainty.
+    # Cases 1 & 2: propagate full covariance — sigma_mc = sqrt(sum(mc_cov)) * R / total_mc.
+    # Case 3: same formula, but mc_cov is diagonal so sum(mc_cov) = sum of stat variances.
+    total_ratio_data_err = np.sqrt(total_data) / total_mc
+
+    # Separate stat (data + MC stat) from syst for the annotation.
+    # __mcstat_err__ always holds the per-bin MC stat regardless of how systematics were computed.
+    _mc_st = mc_dict.get('__mcstat_err__', mc_err) if isinstance(mc_dict, dict) else mc_err
+    mcstat_ratio_err     = np.sqrt(np.sum(_mc_st ** 2)) * (total_ratio / total_mc)
+    total_ratio_stat_err = np.sqrt(total_ratio_data_err**2 + mcstat_ratio_err**2)
+    syst_cov_sum         = max(0.0, np.sum(mc_cov) - np.sum(_mc_st ** 2))
+    total_ratio_syst_err = np.sqrt(syst_cov_sum) * (total_ratio / total_mc)
+
+    total_ratio_mc_err = np.sqrt(np.sum(mc_cov)) * (total_ratio / total_mc)
+    total_ratio_err    = np.sqrt(total_ratio_data_err**2 + total_ratio_mc_err**2)
+
+    valid = np.isfinite(data_hist) & np.isfinite(mc_tot)
+    ndf     = nbins
+    chi2    = np.nan
+    p_value = np.nan
+    if np.count_nonzero(valid) > 0:
+        delta   = data_hist[valid] - mc_tot[valid]
+        cov_sel = counts_cov[np.ix_(valid, valid)]
+        try:
+            chi2 = float(delta.T @ np.linalg.pinv(cov_sel) @ delta)
+            if chi2_dist is not None and np.isfinite(chi2):
+                p_value = float(chi2_dist.sf(chi2, df=ndf))
+        except np.linalg.LinAlgError:
+            chi2    = np.nan
+            p_value = np.nan
+
+    fig.canvas.draw()
+    legend_loc  = str((_p.get('legend_kwargs') or {}).get('loc', '')).lower()
+    main_legend = ax_main.get_legend()
+
+    if main_legend is not None:
+        renderer   = fig.canvas.get_renderer()
+        legend_box = main_legend.get_window_extent(renderer).transformed(ax_main.transAxes.inverted())
+        ann_fontsize = main_legend.get_texts()[0].get_fontsize() if main_legend.get_texts() else 'small'
+    else:
+        legend_box, ann_fontsize = None, 'small'
+
+    if 'right' in legend_loc:
+        anchor_right = True
+    elif 'left' in legend_loc or 'center' in legend_loc:
+        anchor_right = False
+    else:
+        anchor_right = legend_box is not None and legend_box.x0 > 0.5
+
+    if legend_box is not None:
+        ann_x, ann_y = (legend_box.x1 if anchor_right else legend_box.x0), legend_box.y0
+    else:
+        ann_x, ann_y = (0.98, 0.98) if anchor_right else (0.02, 0.98)
+    ann_ha = 'right' if anchor_right else 'left'
+
+    if annot:
+        ax_main.annotate(rf"$\Sigma$ Data/Pred = {total_ratio:.2f} $\pm$ {total_ratio_stat_err:.2f} (stat.) $\pm$ {total_ratio_syst_err:.2f} (syst.)",
+                        xy=(ann_x, ann_y),
+                        xycoords=ax_main.transAxes,
+                        xytext=(0, -6),
+                        textcoords='offset points',
+                        ha=ann_ha, va='top', fontsize=ann_fontsize)
+        
+        ax_main.annotate(rf"$\chi^2$/ndf = {chi2:.1f}/{ndf}, $p$ = {p_value:.2g}",
+                        xy=(ann_x, ann_y),
+                        xycoords=ax_main.transAxes,
+                        xytext=(0, -20),
+                        textcoords='offset points',
+                        ha=ann_ha, va='top', fontsize=ann_fontsize)
+
+    if bin_labels is not None:
+        ax_main.set_xticks(bins)
+        plt.setp(ax_main.get_xticklabels(), visible=False)
+        ax_main.xaxis.set_minor_locator(mpl.ticker.NullLocator())
+        ax_sub.set_xticks(bins)
+        ax_sub.set_xticklabels(bin_labels)
+    else:
+        ax_sub.xaxis.set_minor_locator(_clipped_minor_locator(mc_bins[0], mc_bins[-1]))
+    ax_sub.yaxis.set_minor_locator(mpl.ticker.AutoMinorLocator())
+
+
+    if data_first:
+        handles, labels = ax_main.get_legend_handles_labels()
+        idx = next((i for i, l in enumerate(labels) if l.startswith('data')), None)
+        if idx is not None and idx != 0:
+            order = [idx] + [i for i in range(len(labels)) if i != idx]
+            _leg_kw = {'ncol': 2, 'loc': 'upper right'}
+            _leg_kw.update(_p.get('legend_kwargs') or {})
+            ax_main.legend([handles[i] for i in order], [labels[i] for i in order], **_leg_kw)
+
+    annotate_sbnd(ax_main, internal=_p.get('internal', True))
+
     if savefig!="":
         plt.savefig(savefig,bbox_inches='tight')
-    
+
     return fig, ax_main, ax_sub, mc_dict
 
 
 def plot_mc_hnl_data(mc_df: pd.DataFrame,
-                 hnl_df: pd.DataFrame,
-                 data_df: pd.DataFrame,
-                 var: str | tuple,
-                 bins: list[float] | np.ndarray,
-                 figsize: tuple[int, int] = (7, 6),
-                 ratio_min: float = 0.0,
-                 ratio_max: float = 2.0,
-                 savefig: str = "",
-                 scale_nu: float = 1.0,
-                 scale_hnl: float = 1.0,
-                 bin_labels: list[str] | None = None,
-                 **kwargs) -> tuple[plt.Figure, plt.Axes, plt.Axes]:
-    """Create a combined MC stack filled histogram + HNL step histogram + data overlay plot with data/MC ratio subplot.
+                     hnl_df: pd.DataFrame,
+                     data_df: pd.DataFrame,
+                     var: str | tuple,
+                     bins: list[float] | np.ndarray,
+                     bin_labels: list[str] | None = None,
+                     figsize: tuple[int, int] = (7, 6),
+                     ratio_min: float = 0.0,
+                     ratio_max: float = 2.0,
+                     annot: bool = True,
+                     data_first: bool = True,
+                     savefig: str = "",
+                     scale_nu: float = 1.0,
+                     scale_hnl: float = 1.0,
+                     config: PlottingConfig | None = None,
+                     **kwargs) -> tuple[plt.Figure, plt.Axes, plt.Axes]:
+    """Create a combined MC stack + HNL step histogram + data overlay plot with a data/MC ratio subplot.
+
+    Same as :func:`plot_mc_data`, but overlays an additional HNL sample as an
+    unfilled step histogram on top of the MC stack. Pass
+    ``categories=signal_categories_hnl`` to stack by the HNL signal/background scheme.
 
     Parameters
     ----------
     mc_df : pandas.DataFrame
-        MC dataframe to be stacked.
+        MC dataframe passed to :func:`plot_var` for the stacked background.
     hnl_df : pandas.DataFrame
-        HNL dataframe to be overlaid as a step histogram.
+        HNL dataframe passed to :func:`plot_var` for the step overlay.
     data_df : pandas.DataFrame
-        Dataframe containing observed data to overlay as points with errors.
+        Observed-data dataframe passed to :func:`data_plot_overlay`.
     var : str | tuple
         Column (or multi-index tuple) to histogram.
     bins : array-like
         Bin edges for the histograms.
+    bin_labels : list of str, optional
+        Custom tick labels placed at each bin edge on both axes.
     figsize : tuple, default (7, 6)
-        Figure size.
+        Figure size passed to ``plt.figure``.
     ratio_min, ratio_max : float, default (0.0, 2.0)
-        y-limits for the ratio subplot.
-    savefig : str, optional
-        If provided, path where the figure will be saved (bbox_inches='tight').
+        y-axis limits for the ratio subplot.
+    annot : bool, default True
+        If True, annotate the main axis with the integrated Data/Pred ratio and
+        the chi-squared / p-value.
     scale_nu : float, default 1.0
         Scale factor for neutrino MC.
     scale_hnl : float, default 1.0
         Scale factor for HNL MC.
+    savefig : str, optional
+        If non-empty, save the figure to this path with ``bbox_inches='tight'``.
+    config : PlottingConfig, optional
+        Style/display options. Keyword arguments take priority.
     **kwargs
-        All other arguments (scale, pdg, pdg_col, xlabel, ylabel, title, counts, normalize,
-        systs, hatch, etc.) are forwarded to :func:`plot_var`.
+        Forwarded to :func:`plot_var` for both the MC stack and the HNL overlay
+        (e.g. ``categories=signal_categories_hnl``, ``systs``, ``hatch``,
+        ``normalize``, ``legend_kwargs``).
 
     Returns
     -------
-    fig, ax_main, ax_sub
-        The created matplotlib Figure and the main and ratio Axes.
+    fig : matplotlib.figure.Figure
+    ax_main : matplotlib.axes.Axes
+        The upper (MC stack + HNL overlay + data) axis.
+    ax_sub : matplotlib.axes.Axes
+        The lower (data/MC ratio) axis.
+    mc_dict : dict
+        The syst dict returned by :func:`plot_var` for the MC stack.
+    hnl_dict : dict
+        The syst dict returned by :func:`plot_var` for the HNL overlay.
     """
+    _p = {f.name: getattr(config, f.name) for f in _dc_fields(config)} if config is not None else {}
+    _p.update(kwargs)
+    ratio_min  = _p.get('ratio_min', ratio_min)
+    ratio_max  = _p.get('ratio_max', ratio_max)
+    data_first = _p.get('data_first', data_first)
     fig = plt.figure(figsize=figsize)
-    gs = GridSpec(2, 1, height_ratios=[6, 1], hspace=0.4)
+    gs = GridSpec(2, 1, height_ratios=[6, 1], hspace=0.05)
     ax_main = fig.add_subplot(gs[0])
-    ax_sub = fig.add_subplot(gs[1])
+    ax_sub = fig.add_subplot(gs[1], sharex=ax_main)
 
-    data_args = dict(df=data_df, var=var, bins=bins, ax=ax_main, normalize=kwargs.get('normalize', False), overflow=kwargs.get('overflow',True))
-    mc_args   = dict(df=mc_df, var=var, bins=bins, ax=ax_main, hist_filled=True, error_legend=False, scale = scale_nu, **kwargs)
-    #hnl user default False for percents and counts, no overwrite
-    hnl_args = {**dict(df=hnl_df, var=var, bins=bins, ax=ax_main, hist_filled=False, error_legend=True, scale=scale_hnl, **kwargs), 'percents': False, 'counts': False}
+    data_args = dict(df=data_df, var=var, bins=bins, ax=ax_main, normalize=_p.get('normalize', False), overflow=_p.get('overflow', True))
+    mc_args   = dict(df=mc_df,  var=var, bins=bins, ax=ax_main, hist_filled=True,  error_legend=False, scale=scale_nu,  config=config, **kwargs)
+    # hnl uses default False for percents and counts unless the caller overrides them
+    hnl_args  = {**dict(df=hnl_df, var=var, bins=bins, ax=ax_main, hist_filled=False, error_legend=True, scale=scale_hnl, config=config, **kwargs),
+                 'percents': kwargs.get('percents', False), 'counts': kwargs.get('counts', False)}
 
     data_hist, data_err, data_plot = data_plot_overlay(**data_args)
     mc_bins, mc_steps, mc_err, mc_dict = plot_var(**mc_args)
-    _, hnl_steps, hnl_err, hnl_dict = plot_var(**hnl_args)
+    _, hnl_steps, hnl_err, hnl_dict   = plot_var(**hnl_args)
 
     xmin, xmax = ax_main.get_xlim()
-    
+
     # plot the ratio
     mc_tot = mc_steps[-1][1:]  # last step contains the total MC counts
+    fig.canvas.draw()
 
     with warnings.catch_warnings():
-        warnings.filterwarnings("ignore",message="invalid value encountered in divide")
+        warnings.filterwarnings("ignore", message="invalid value encountered in divide")
         # ratio is (data bin content) / (mc bin content)
         ratio = data_hist / mc_tot
         # error in ratio is just (data error) / (mc bin content)
         ratio_err = data_err / mc_tot
         # error in shading should just be (mc error) / (mc bin content)
-        mc_contribution = mc_err/mc_tot
-        # shading is around unity    
-        ps_err = 1 + np.append(mc_contribution[0],mc_contribution)
-        ms_err = 1 - np.append(mc_contribution[0],mc_contribution)
-        
+        mc_contribution = mc_err / mc_tot
+        # shading is around unity
+        ps_err = 1 + np.append(mc_contribution[0], mc_contribution)
+        ms_err = 1 - np.append(mc_contribution[0], mc_contribution)
+
+    nbins = len(bins) - 1
+    mc_total_cov = mc_dict.get('__total_cov__') if isinstance(mc_dict, dict) else None
+
     bin_centers = 0.5 * (mc_bins[1:] + mc_bins[:-1])
-    nbins = len(bins)-1
-    
-    ax_sub.errorbar(bin_centers, ratio, yerr=ratio_err, fmt='s', markersize=3,color='black', zorder=1e3, label='data/MC ratio')
-    # fill_between needs last entry to be repeated 
-    ax_sub.fill_between(mc_bins,ms_err, ps_err, step="pre", color=mpl.colors.to_rgba("gray", alpha=0.4), lw=0.0, label='MC err.')
-    
-    ax_sub.axhline(1, color='red', linestyle='--', linewidth=1, zorder=0,label="y=1.0")
+
+    ax_sub.errorbar(bin_centers, ratio, yerr=ratio_err, fmt='s', markersize=3, color='black', zorder=1e3, label='Data/Pred ratio')
+    # fill_between needs last entry to be repeated
+    ax_sub.fill_between(mc_bins, ms_err, ps_err, step="pre", color=mpl.colors.to_rgba("gray", alpha=0.4), lw=0.0, label='Pred err.')
+
+    ax_sub.axhline(1, color='red', linestyle='--', linewidth=1, zorder=0, label="y=1.0")
     ax_sub.set_xlim(xmin, xmax)
     ax_sub.set_ylim(ratio_min, ratio_max)
-    ax_sub.set_ylabel("Data/MC")
-    ax_sub.legend(loc='upper center', bbox_to_anchor=(0.5, 1.5),
-                  ncol=3,fontsize='small',frameon=False)
-    cut_val = kwargs.get('cut_val', None)
+    ax_sub.set_ylabel("Data/Pred")
+    # Move xlabel to ratio panel and suppress top-panel x-axis tick labels.
+    ax_sub.set_xlabel(ax_main.get_xlabel(), fontsize=12)
+    ax_main.set_xlabel("")
+    plt.setp(ax_main.get_xticklabels(), visible=False)
+    ax_main.tick_params(axis='x', which='both', bottom=True, top=False)
+
+    cut_val = _p.get('cut_val', None)
     if cut_val is not None:
         for cut in cut_val:
-            # ax_main.axvline(cut, color='black', linestyle='--', linewidth=2, alpha=0.5, zorder=1e2)
-            ax_sub.axvline (cut, color='black', linestyle='--', linewidth=2, alpha=0.5, zorder=1e2)
+            ax_sub.axvline(cut, color='black', linestyle='--', linewidth=2, alpha=0.5, zorder=1e2)
+
+    total_data = np.sum(data_hist)
+    total_mc   = np.sum(mc_tot)
+    total_ratio = total_data / total_mc
+
+    # MC covariance matrix — full 2D when cases 1/2 were used in plot_var,
+    # diagonal stat-only for case 3.
+    has_full_cov = isinstance(mc_total_cov, np.ndarray) and mc_total_cov.shape == (nbins, nbins)
+    mc_cov = mc_total_cov if has_full_cov else np.diag(np.square(mc_err))
+
+    # Combined covariance for chi-sq: data (Poisson diagonal) + MC.
+    data_cov   = np.diag(np.square(data_err))
+    counts_cov = data_cov + mc_cov
+
+    # Integrated ratio uncertainty.
+    total_ratio_data_err = np.sqrt(total_data) / total_mc
+
+    # Separate stat (data + MC stat) from syst for the annotation.
+    _mc_st = mc_dict.get('__mcstat_err__', mc_err) if isinstance(mc_dict, dict) else mc_err
+    mcstat_ratio_err     = np.sqrt(np.sum(_mc_st ** 2)) * (total_ratio / total_mc)
+    total_ratio_stat_err = np.sqrt(total_ratio_data_err**2 + mcstat_ratio_err**2)
+    syst_cov_sum         = max(0.0, np.sum(mc_cov) - np.sum(_mc_st ** 2))
+    total_ratio_syst_err = np.sqrt(syst_cov_sum) * (total_ratio / total_mc)
+
+    valid = np.isfinite(data_hist) & np.isfinite(mc_tot)
+    ndf     = nbins
+    chi2    = np.nan
+    p_value = np.nan
+    if np.count_nonzero(valid) > 0:
+        delta   = data_hist[valid] - mc_tot[valid]
+        cov_sel = counts_cov[np.ix_(valid, valid)]
+        try:
+            chi2 = float(delta.T @ np.linalg.pinv(cov_sel) @ delta)
+            if chi2_dist is not None and np.isfinite(chi2):
+                p_value = float(chi2_dist.sf(chi2, df=ndf))
+        except np.linalg.LinAlgError:
+            chi2    = np.nan
+            p_value = np.nan
+
+    fig.canvas.draw()
+    legend_loc  = str((_p.get('legend_kwargs') or {}).get('loc', '')).lower()
+    main_legend = ax_main.get_legend()
+
+    if main_legend is not None:
+        renderer   = fig.canvas.get_renderer()
+        legend_box = main_legend.get_window_extent(renderer).transformed(ax_main.transAxes.inverted())
+        ann_fontsize = main_legend.get_texts()[0].get_fontsize() if main_legend.get_texts() else 'small'
+    else:
+        legend_box, ann_fontsize = None, 'small'
+
+    if 'right' in legend_loc:
+        anchor_right = True
+    elif 'left' in legend_loc or 'center' in legend_loc:
+        anchor_right = False
+    else:
+        anchor_right = legend_box is not None and legend_box.x0 > 0.5
+
+    if legend_box is not None:
+        ann_x, ann_y = (legend_box.x1 if anchor_right else legend_box.x0), legend_box.y0
+    else:
+        ann_x, ann_y = (0.98, 0.98) if anchor_right else (0.02, 0.98)
+    ann_ha = 'right' if anchor_right else 'left'
+
+    if annot:
+        ax_main.annotate(rf"$\Sigma$ Data/Pred = {total_ratio:.2f} $\pm$ {total_ratio_stat_err:.2f} (stat.) $\pm$ {total_ratio_syst_err:.2f} (syst.)",
+                        xy=(ann_x, ann_y),
+                        xycoords=ax_main.transAxes,
+                        xytext=(0, -6),
+                        textcoords='offset points',
+                        ha=ann_ha, va='top', fontsize=ann_fontsize)
+
+        ax_main.annotate(rf"$\chi^2$/ndf = {chi2:.1f}/{ndf}, $p$ = {p_value:.2g}",
+                        xy=(ann_x, ann_y),
+                        xycoords=ax_main.transAxes,
+                        xytext=(0, -20),
+                        textcoords='offset points',
+                        ha=ann_ha, va='top', fontsize=ann_fontsize)
+
     if bin_labels is not None:
         ax_main.set_xticks(bins)
-        ax_main.set_xticklabels(bin_labels)
+        plt.setp(ax_main.get_xticklabels(), visible=False)
+        ax_main.xaxis.set_minor_locator(mpl.ticker.NullLocator())
         ax_sub.set_xticks(bins)
         ax_sub.set_xticklabels(bin_labels)
-    #annotate_internal(ax_main)
+    else:
+        ax_sub.xaxis.set_minor_locator(_clipped_minor_locator(mc_bins[0], mc_bins[-1]))
+    ax_sub.yaxis.set_minor_locator(mpl.ticker.AutoMinorLocator())
 
-    if savefig!="":
-        plt.savefig(savefig,bbox_inches='tight')
+    if data_first:
+        handles, labels = ax_main.get_legend_handles_labels()
+        idx = next((i for i, l in enumerate(labels) if l.startswith('data')), None)
+        if idx is not None and idx != 0:
+            order = [idx] + [i for i in range(len(labels)) if i != idx]
+            _leg_kw = {'ncol': 2, 'loc': 'upper right'}
+            _leg_kw.update(_p.get('legend_kwargs') or {})
+            ax_main.legend([handles[i] for i in order], [labels[i] for i in order], **_leg_kw)
 
-    #add things to dict to be returned for later use if needed
+    annotate_sbnd(ax_main, internal=_p.get('internal', True))
+
+    # add things to dict to be returned for later use if needed
     mc_dict['bins'] = mc_bins
     mc_dict['counts'] = mc_steps[-1][1:]  # last step contains the total MC counts
     mc_dict['total_err'] = mc_err
@@ -624,13 +992,11 @@ def plot_mc_hnl_data(mc_df: pd.DataFrame,
     hnl_dict['counts'] = hnl_steps[-1][1:]  # last step contains the total HNL counts
     hnl_dict['total_err'] = hnl_err
 
-    dt_dict = {
-        'bins': mc_bins,
-        'counts': data_hist,
-        'total_err': data_err,
-    }
-    
-    return fig, ax_main, ax_sub, mc_dict, hnl_dict, dt_dict
+    if savefig != "":
+        plt.savefig(savefig, bbox_inches='tight')
+
+    return fig, ax_main, ax_sub, mc_dict, hnl_dict
+
 
 def plot_mc_hnl(mc_df: pd.DataFrame,
                 hnl_df: pd.DataFrame,
@@ -644,7 +1010,10 @@ def plot_mc_hnl(mc_df: pd.DataFrame,
                 show_fom: bool = False,
                 fom_nsigma: float = 1.0,
                 **kwargs) -> tuple[plt.Figure, plt.Axes]:
-    """MC BNB stacked histogram + HNL step overlay, without data points."""
+    """MC BNB stacked histogram + HNL step overlay, without data points.
+
+    Pass ``categories=signal_categories_hnl`` to stack by the HNL signal/background scheme.
+    """
     if show_fom:
         fig = plt.figure(figsize=(figsize[0], figsize[1] + 2))
         gs  = GridSpec(2, 1, height_ratios=[3, 1], hspace=0.35)
@@ -710,3 +1079,313 @@ def plot_mc_hnl(mc_df: pd.DataFrame,
     if show_fom:
         return fig, ax, ax_fom, mc_dict, hnl_dict
     return fig, ax, mc_dict, hnl_dict
+
+
+def plot_detvar(
+    detvar_dict: dict,
+    key: str,
+    var: str | tuple,
+    bins: np.ndarray,
+    figsize: tuple[int, int] = (5, 5),
+    xlabel: str = "",
+    ylabel: str = "Events",
+    ratio_min: float = 0.5,
+    ratio_max: float = 1.5,
+    internal: bool = True,
+    bin_labels: list[str] | None = None,
+) -> tuple[plt.Figure, plt.Axes, plt.Axes]:
+    """Compare DV and CV histograms for one detector variation entry.
+
+    Parameters
+    ----------
+    detvar_dict : dict
+        Detector variation dictionary as returned by
+        :func:`~nueana.detvar.store.load_detvar_dict`.
+    key : str
+        Group name to plot (a key in ``detvar_dict``).
+    var : str or tuple
+        Column to histogram.
+    bins : np.ndarray
+        Bin edges.
+    figsize : tuple, default (5, 5)
+    xlabel : str, optional
+        x-axis label placed on the ratio panel.
+    ylabel : str, default "Events"
+    ratio_min, ratio_max : float, default (0.5, 1.5)
+        y-axis limits for the DV/CV ratio subplot.
+    bin_labels : list of str, optional
+        Custom tick labels placed at each bin edge on the ratio panel.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+    ax_main : matplotlib.axes.Axes
+        Upper panel with CV and DV histograms.
+    ax_ratio : matplotlib.axes.Axes
+        Lower panel with DV/CV ratio.
+    """
+    entry  = detvar_dict[key]
+    cv_df  = ensure_lexsorted(entry['cv_df'], axis=1)
+
+    cv_hist = get_hist1d(data=cv_df[var], bins=bins)
+
+    dv_entry = entry['dv_df']
+    dv_dfs   = dv_entry if isinstance(dv_entry, list) else [dv_entry]
+    dv_hists = [
+        get_hist1d(data=ensure_lexsorted(dv, axis=1)[var], bins=bins)
+        for dv in dv_dfs
+    ]
+
+    fig = plt.figure(figsize=figsize)
+    gs       = GridSpec(2, 1, height_ratios=[4, 1], hspace=0.15)
+    ax_main  = fig.add_subplot(gs[0])
+    ax_ratio = fig.add_subplot(gs[1])
+
+    ax_main.stairs(cv_hist, bins, color='black', lw=1.5, label='CV')
+    colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
+    for i, dv_hist in enumerate(dv_hists):
+        label = f'DV {i}' if len(dv_hists) > 1 else 'DV'
+        color = colors[i % len(colors)]
+        ax_main.stairs(dv_hist, bins, color=color, lw=1.5, linestyle='--', label=label)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            ratio = np.where(cv_hist > 0, dv_hist / cv_hist, np.nan)
+        ax_ratio.stairs(ratio, bins, color=color, lw=1.5, linestyle='--')
+
+    ax_ratio.axhline(1.0, color='black', lw=1)
+    ax_ratio.set_ylim(ratio_min, ratio_max)
+    ax_ratio.set_ylabel("DV / CV")
+    if xlabel:
+        ax_ratio.set_xlabel(xlabel,fontsize=12)
+
+    xmin, xmax = ax_main.get_xlim()
+    ax_ratio.set_xlim(xmin, xmax)
+
+    ax_main.set_ylabel(ylabel)
+    ax_main.set_title(key)
+    ax_main.legend()
+    annotate_sbnd(ax_main, internal=internal)
+
+    if bin_labels is not None:
+        ax_main.set_xticks(bins)
+        ax_main.set_xticklabels(bin_labels)
+        ax_main.xaxis.set_minor_locator(mpl.ticker.NullLocator())
+        ax_ratio.set_xticks(bins)
+        ax_ratio.set_xticklabels(bin_labels)
+    else:
+        ax_main.xaxis.set_minor_locator(_clipped_minor_locator(bins[0], bins[-1]))
+        ax_ratio.xaxis.set_minor_locator(_clipped_minor_locator(bins[0], bins[-1]))
+
+    return fig, ax_main, ax_ratio
+
+
+def _combine_syst_uncertainties(syst_df: pd.DataFrame) -> np.ndarray:
+    """Combine per-row uncertainty arrays into a single per-bin band."""
+    if hasattr(syst_df, 'empty') and syst_df.empty:
+        return np.array([])
+
+    if isinstance(syst_df, pd.Series):
+        unc_values = np.stack(syst_df.to_numpy())
+    else:
+        unc_values = np.stack(syst_df['unc_diag'].to_numpy())
+    return np.sqrt(np.sum(np.square(unc_values), axis=0))
+
+
+def plot_syst_category_breakdown(
+    syst_vars: list[tuple],
+    category_dict: dict,
+    region_label: str = "Signal Region",
+    figsize: tuple[int, int] | None = None,
+    xsec: bool = False,
+    show_cv: bool = False,
+    projected_pot: float = 1e20,
+) -> tuple[plt.Figure, np.ndarray, list, list]:
+    """Plot the category-level systematics summary for any number of variables.
+
+    Parameters
+    ----------
+    syst_vars : list of tuple
+        One entry per variable, each a 3- or 4-tuple:
+        ``(SystematicsOutput, bins, xlabel)`` or
+        ``(SystematicsOutput, bins, xlabel, bin_labels)``.
+    category_dict : dict
+        Mapping of category name → style dict (``color``, ``label``, ``line``).
+    region_label : str, default "Signal Region"
+        Text stamped in the corner of each subplot.
+    figsize : tuple, optional
+        Figure size. Defaults to ``(5 * n_vars, 4)``.
+    xsec : bool, default False
+        If True, plot uncertainties on the cross section (``xsec_syst_df``)
+        instead of the event rate (``rate_syst_df``).
+    show_cv : bool, default True
+        If True, overlay the predicted event-rate histogram on a twin y-axis
+        (right) as a semi-transparent filled band.
+    projected_pot : float, default 1e20
+        POT used to scale the CV histogram to predicted event counts.
+
+    Returns
+    -------
+    fig, axes, cats_per_var, cat_sums_per_var
+        ``cats_per_var`` and ``cat_sums_per_var`` are lists (one per variable)
+        of grouped uncertainty arrays and normalisation sums.
+    """
+    n = len(syst_vars)
+    if figsize is None:
+        figsize = (5 * n, 4)
+
+    fig, axes = plt.subplots(1, n, figsize=figsize)
+    if n == 1:
+        axes = np.array([axes])
+    plt.subplots_adjust(wspace=0.3)
+
+    cats_per_var = []
+    cat_sums_per_var = []
+
+    for ax, item in zip(axes, syst_vars):
+        syst_output, bins, xlabel = item[0], item[1], item[2]
+        bin_labels = item[3] if len(item) > 3 else None
+        if xsec:
+            if not syst_output.has_xsec:
+                raise ValueError("SystematicsOutput does not contain xsec results; recompute with xsec_inputs set.")
+            syst_df = syst_output.xsec_syst_df
+            cv_hist = np.asarray(syst_output.xsec_hist_cv)
+        else:
+            syst_df = syst_output.rate_syst_df
+            cv_hist = np.asarray(syst_output.rate_hist_cv)
+
+        if show_cv:
+            plt.subplots_adjust(wspace=0.5)
+            flux_scale = integrated_flux * (projected_pot / 1e6)
+            cv_counts = cv_hist * flux_scale
+            ax_cv = ax.twinx()
+            ax_cv.stairs(cv_counts, bins, fill=True, alpha=0.25, color='steelblue', lw=0)
+            ax_cv.set_ylim(bottom=0, top=np.max(cv_counts) * 1.25)
+            pot_label = f"{projected_pot:.0e}".replace("e+", "e").replace("e0", "e")
+            ax_cv.set_ylabel(f"Predicted Events ({pot_label} POT)", color='steelblue', alpha=0.7, fontsize=10)
+            ax_cv.tick_params(axis='y', labelcolor='steelblue')
+            ax_cv.set_zorder(ax.get_zorder() - 1)
+            ax.set_facecolor('none')
+
+        cat    = syst_df.sort_values('unc_norm').groupby('category')['unc_diag'].apply(_combine_syst_uncertainties)
+        sums   = syst_df.groupby('category')['unc_norm'].apply(lambda s: float(np.sqrt(np.sum(s**2))))
+        cats_per_var.append(cat)
+        cat_sums_per_var.append(sums)
+
+        for category in category_dict.keys():
+            if category not in cat.index:
+                continue
+            style = category_dict[category]
+            ax.stairs(
+                cat[category] * 100,
+                bins,
+                lw=1.8,
+                linestyle=style['line'],
+                label=f"{style['label']} ({sums.get(category, 0.):.1%})",
+                color=style['color'],
+                alpha=0.8,
+            )
+
+        tot = _combine_syst_uncertainties(syst_df)
+        total_sum = float(np.sqrt(np.sum(syst_df['unc_norm'] ** 2)))
+        if tot.size:
+            ax.stairs(tot * 100, bins, lw=2, color='black', label=f'Total ({total_sum:.1%})')
+
+        ax.set_xlabel(xlabel,fontsize=12)
+        _ylabel = "Uncertainty on the Cross Section [%]" if xsec else "Uncertainty on the Event Rate [%]"
+        ax.set_ylabel(_ylabel)
+        ax.set_ylim(0, 35)
+        ax.set_xticks(bins)
+        if bin_labels is not None:
+            ax.set_xticklabels(bin_labels)
+        ax.annotate(text=region_label, xy=(0.02, 0.925), xycoords='axes fraction',
+                    fontsize=11, fontweight='bold', alpha=0.5)
+
+    axes[-1].legend(bbox_to_anchor=(1.05, 1), loc='upper left',
+                    title="Uncertainty Sources (Normalization %)")
+
+    return fig, axes, cats_per_var, cat_sums_per_var
+
+
+def plot_syst_breakdown(
+    syst_vars: list[tuple],
+    category: str,
+    category_dict: dict,
+    region_label: str | None = None,
+    figsize: tuple[int, int] | None = None,
+    xsec: bool = False,
+) -> tuple[plt.Figure, np.ndarray]:
+    """Plot the per-source systematics breakdown for one category.
+
+    Parameters
+    ----------
+    syst_vars : list of tuple
+        One entry per variable, each a 3- or 4-tuple:
+        ``(SystematicsOutput, bins, xlabel)`` or
+        ``(SystematicsOutput, bins, xlabel, bin_labels)``.
+    category : str
+        Category key from ``category_dict`` to plot.
+    category_dict : dict
+        Mapping of category name → style dict (``color``, ``label``, ``line``).
+    region_label : str, optional
+        Text stamped in the corner ojf each subplot.
+    figsize : tuple, optional
+        Figure size. Defaults to ``(5 * n_vars, 4)``.
+    xsec : bool, default False
+        If True, plot uncertainties on the cross section (``xsec_syst_df``)
+        instead of the event rate (``rate_syst_df``).
+
+    Returns
+    -------
+    fig, axes
+    """
+    n = len(syst_vars)
+    if figsize is None:
+        figsize = (5 * n, 4)
+
+    this_color = category_dict[category]['color']
+    this_label = category_dict[category]['label']
+
+    fig, axes = plt.subplots(1, n, figsize=figsize)
+    if n == 1:
+        axes = np.array([axes])
+    plt.subplots_adjust(wspace=0.3)
+
+    for ax, item in zip(axes, syst_vars):
+        syst_output, bins, xlabel = item[0], item[1], item[2]
+        bin_labels = item[3] if len(item) > 3 else None
+        if xsec:
+            if not syst_output.has_xsec:
+                raise ValueError("SystematicsOutput does not contain xsec results; recompute with xsec_inputs set.")
+            syst_df = syst_output.xsec_syst_df
+        else:
+            syst_df = syst_output.rate_syst_df
+
+        this_df = syst_df[syst_df.category == category].sort_values('unc_norm', ascending=False)
+
+        for _, row in this_df.iterrows():
+            ax.stairs(
+                row.unc_diag * 100,
+                bins,
+                lw=1.5,
+                label=row.key + f" ({row['unc_norm']:.1%})" if row.top5 else "",
+                alpha=0.5,
+            )
+
+        tot = _combine_syst_uncertainties(this_df)
+        tot_sum = float(np.sqrt(np.sum(this_df['unc_norm'] ** 2)))
+        if tot.size:
+            ax.stairs(tot * 100, bins, lw=2, color=this_color,
+                      label=f'Total {this_label} ({tot_sum:.1%})')
+
+        ax.set_xlabel(xlabel)
+        _ylabel = "Uncertainty on the Cross Section [%]" if xsec else "Uncertainty on the Event Rate [%]"
+        ax.set_ylabel(_ylabel)
+        ax.set_ylim(0, 35)
+        ax.set_xticks(bins)
+        if bin_labels is not None:
+            ax.set_xticklabels(bin_labels)
+        ax.legend(title='top 5 sources', fontsize=9)
+        if region_label is not None:
+            ax.annotate(text=region_label, xy=(0.02, 0.925), xycoords='axes fraction',
+                        fontsize=11, fontweight='bold', alpha=0.5)
+
+    return fig, axes

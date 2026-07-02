@@ -1,346 +1,211 @@
-import sys; sys.path.append("/exp/sbnd/data/users/lnguyen/cafpyana_pi0/cafpyana")
+"""Generic cut infrastructure for nue CC selection.
+
+:class:`~nueana.classes.CutSpec` (defined in :mod:`nueana.classes`) and the
+functions to build, modify, and apply cut sequences live here.
+
+The analysis-specific cut sequences (:data:`~nueana.analysis.DEFAULT_CUTS`,
+:data:`~nueana.analysis.SIDEBAND_CUTS`) and signal categorisation live in
+:mod:`nueana.analysis`.
+
+**Tighten or loosen a cut**::
+
+    from nueana import modify_cut, select, DEFAULT_CUTS
+
+    cuts = modify_cut(DEFAULT_CUTS, "dedx", min=1.5, max=3.0)
+    df_sel = select(df, cuts=cuts)
+
+**Drop a cut**::
+
+    from nueana import DEFAULT_CUTS, drop_cuts
+
+    cuts = drop_cuts(DEFAULT_CUTS, "muon_rejection")
+    cuts = drop_cuts(DEFAULT_CUTS, "direction", "shower_length")
+
+**Add a custom cut**::
+
+    from nueana.classes import CutSpec
+    cuts = DEFAULT_CUTS + [CutSpec("my_cut", fn=lambda df: df.x > 10)]
+
+**Adjust a parameter of an fn-based cut** (combine with ``functools.partial``)::
+
+    from functools import partial
+    cuts = modify_cut(DEFAULT_CUTS, "muon_rejection",
+                      fn=partial(cut_muon_rejection, max_track_length=100))
+"""
+
+import warnings
+
 import numpy as np
 import pandas as pd
-from . import config
-from makedf.util import *
-from pyanalib.pandas_helpers import *
+from dataclasses import replace
+from functools import reduce
 
+from makedf.util import InFV, InAV
+from .classes import CutSpec
 from .utils import ensure_lexsorted
-from .constants import signal_dict, generic_dict
-from .geometry import whereTPC
 
-def InSpill(df,spill_start=0.335, spill_end=0.335+1.6):
-    return (df.slc.barycenterFM.flashTime > spill_start) & (df.slc.barycenterFM.flashTime < spill_end)
 
-def InScore(df,score_cut=0.02):
-    return (df.slc.barycenterFM.score > score_cut)
+__all__ = ['drop_cuts', 'modify_cut', 'select', 'select_sideband',
+           'define_signal_pi0', 'define_signal_hnl']
 
-def select(indf,
-           stage = None,
-           savedict = False,
-           spring=True,
-           realisticFV=True,
-           spill_start=0.335, 
-           spill_end=0.335+1.6, 
-           score_cut=0.02,
-           nuscore_cut=0.5,
-           pe_cut = 2e3,
-           shower_scale=1.17,
-           min_shower_energy=0.5,
-           max_track_length=200,
-           min_conversion_gap=0.001,
-           max_conversion_gap=2,
-           min_dedx=1.25,
-           max_dedx=2.5,
-           min_opening_angle=0.03,
-           max_opening_angle=0.15,
-           min_shower_length=0.1,
-           max_shower_length=200):
-    """
-    Apply selection cuts to neutrino interaction data.
-    
+
+# ---------------------------------------------------------------------------
+# Cut application
+# ---------------------------------------------------------------------------
+
+def _mask(df, spec):
+    """Return a boolean mask for spec applied to df."""
+    if spec.fn is not None:
+        return spec.fn(df)
+    series = spec.accessor(df) if spec.accessor is not None else reduce(getattr, spec.variable, df)
+    return (series > spec.min) & (series < spec.max)
+
+
+def drop_cuts(cuts, *names):
+    """Return a copy of cuts with the named cut(s) removed.
+
     Parameters
     ----------
-    indf : pandas.DataFrame
-        Input DataFrame with neutrino interaction data
-    stage : str, optional
-        If provided, stop after filling that stage and return immediately.
-        Allowed values are: 'preselection', 'flash matching', 'shower energy',
-        'muon rejection', 'conversion gap', 'dEdx', 'opening angle', 'shower length'.
-        If None (default), applies all cuts and returns all stages.
-    savedict : bool, optional
-        If False (default), return only the final selected DataFrame (or selected stage).
-        If True, return a dictionary with all saved stages.
-    spring : bool, optional
-        If True (default), use max-plane shower energy for reco-energy definition.
-        If False, use best-plane shower energy.
-    realisticFV : bool, optional
-        Whether to apply realistic active volume cut (default: True)
-    spill_start : float, optional
-        Minimum flash time for beam spill (default: 0.335)
-    spill_end : float, optional
-        Maximum flash time for beam spill (default: 1.935)
-    score_cut : float, optional
-        Minimum flash matching score (default: 0.02)
-    nuscore_cut : float, optional
-        Minimum neutrino score for preselection (default: 0.5)
-    pe_cut : float, optional
-        Minimum flash photoelectrons for preselection (default: 2000)
-    shower_scale : float, optional
-        Scale factor for shower energy, reco->true (default: 1.17)
-    min_shower_energy : float, optional
-        Minimum primary shower energy in GeV (default: 0.5)
-    max_track_length : float, optional
-        Maximum track length in cm for muon rejection (default: 200)
-    min_conversion_gap : float, optional
-        Minimum conversion gap (default: 0.001)
-    max_conversion_gap : float, optional
-        Maximum conversion gap (default: 2)
-    min_dedx : float, optional
-        Minimum dE/dx on best plane (default: 1.25)
-    max_dedx : float, optional
-        Maximum dE/dx on best plane (default: 2.5)
-    min_opening_angle : float, optional
-        Minimum shower opening angle (default: 0.03)
-    max_opening_angle : float, optional
-        Maximum shower opening angle (default: 0.15)
-    min_shower_length : float, optional
-        Minimum shower length in cm (default: 0.1)
-    max_shower_length : float, optional
-        Maximum shower length in cm (default: 200)
-    
+    cuts : list of CutSpec
+        The cut sequence to modify.
+    *names : str
+        Names of cuts to drop.
+
+    Examples
+    --------
+    >>> cuts = drop_cuts(DEFAULT_CUTS, "muon_rejection")
+    >>> cuts = drop_cuts(DEFAULT_CUTS, "direction", "shower_length")
+    """
+    unknown = set(names) - {c.name for c in cuts}
+    if unknown:
+        raise ValueError(f"No cuts named {sorted(unknown)}. Available: {[c.name for c in cuts]}")
+    return [c for c in cuts if c.name not in names]
+
+
+def modify_cut(cuts, name, **kwargs):
+    """Return a copy of cuts with the named CutSpec updated.
+
+    Parameters
+    ----------
+    cuts : list of CutSpec
+        The cut sequence to modify.
+    name : str
+        Name of the cut to update.
+    **kwargs
+        Fields to update on the matching CutSpec (passed to
+        ``dataclasses.replace``).
+
     Returns
     -------
-    dict or pandas.DataFrame
-        If savedict=True, returns dictionary of DataFrames after each selection cut.
-        If savedict=False, returns only the final (or stage-specific) DataFrame.
-        If stage is provided, returns only up to and including that stage.
+    list of CutSpec
+        New list with the named entry replaced.
+
+    Raises
+    ------
+    ValueError
+        If no cut with the given name exists.
+
+    Examples
+    --------
+    >>> cuts = modify_cut(DEFAULT_CUTS, "dedx", min=1.5, max=3.0)
+    >>> cuts = modify_cut(cuts, "muon_rejection",
+    ...                   fn=partial(cut_muon_rejection, max_track_length=100))
     """
-    valid_stages = [
-        'preselection',
-        'flash matching',
-        'shower energy',
-        'muon rejection',
-        'conversion gap',
-        'dEdx',
-        'opening angle',
-        'shower length'
-        ]
-    if stage is not None and stage not in valid_stages:
-        raise ValueError(f"Unknown stage '{stage}'. Valid options: {valid_stages}")
+    names = [c.name for c in cuts]
+    if name not in names:
+        raise ValueError(f"No cut named '{name}'. Available: {names}")
+    return [replace(c, **kwargs) if c.name == name else c for c in cuts]
 
-    df_dict = {}
-    df = indf.copy()
-    if spring:
-        df[("primshw","shw","reco_energy",'','','')] = df.primshw.shw.maxplane_energy*shower_scale
-    else:
-        df[("primshw","shw","reco_energy",'','','')] = df.primshw.shw.bestplane_energy*shower_scale
-    
-    def save_stage(stage_name, current_df):
-        """Save stage to dict if savedict=True and early return if at target stage."""
-        if savedict:
-            df_dict[stage_name] = current_df
-        if stage == stage_name:
-            return df_dict if savedict else current_df
-        return None
-    # ** these cuts done already in makedf
-    # * require nuscore > 0.5
-    # * require not clear cosmic 
-    # * require reco vertex in AV
-    # * require that there is a primary shower (at least one pfp w/ trackScore < 0.5)
-    if realisticFV:
-        df = df[(InFV(df.slc.vertex,det="SBND_nohighyz",inzback=0))]
-    df = df[df.slc.barycenterFM.flashPEs > pe_cut]
-    df = df[df.slc.nu_score>nuscore_cut]
-    result = save_stage('preselection', df)
-    if result is not None: return result
-    
-    # * require that the matched (many-to-many) is inside the beam spill
-    df = df[InSpill(df, spill_start, spill_end) & InScore(df, score_cut)]
-    result = save_stage('flash matching', df)
-    if result is not None: return result
 
-    # * require that primary shower > min_shower_energy
-    df = df[df.primshw.shw.reco_energy > min_shower_energy]
-    result = save_stage('shower energy', df)
-    if result is not None: return result
+# ---------------------------------------------------------------------------
+# Selection pipeline
+# ---------------------------------------------------------------------------
 
-    # * require track length < max_track_length cm
-    df = df[np.isnan(df.primtrk.trk.len) | (df.primtrk.trk.len < max_track_length)]
-    result = save_stage('muon rejection', df)
-    if result is not None: return result
+def select(indf,
+           cuts=None,
+           stage=None,
+           savedict=False,
+           check_preprocessed=True):
+    """Apply a sequence of cuts to a DataFrame.
 
-    df = df[(df.primshw.shw.conversion_gap < max_conversion_gap) & 
-            (df.primshw.shw.conversion_gap > min_conversion_gap)]
-    result = save_stage('conversion gap', df)
-    if result is not None: return result
-
-    df = df[(df.primshw.shw.bestplane_dEdx > min_dedx) & (df.primshw.shw.bestplane_dEdx < max_dedx)]
-    result = save_stage('dEdx', df)
-    if result is not None: return result
-
-    df = df[(df.primshw.shw.open_angle > min_opening_angle) & 
-            (df.primshw.shw.open_angle < max_opening_angle)]
-    result = save_stage('opening angle', df)
-    if result is not None: return result
-    
-    df = df[(df.primshw.shw.len < max_shower_length) & 
-            (df.primshw.shw.len > min_shower_length)]
-    result = save_stage('shower length', df)
-    if result is not None: return result
-
-    return df_dict if savedict else df
-
-def select_sideband(indf, 
-                    savedict=False,
-                    min_conversion_gap=2,
-                    max_conversion_gap=1e3,
-                    max_track_length=1e3,
-                    min_dedx=3,
-                    max_dedx=6,
-                    min_opening_angle=0.15,
-                    max_opening_angle=1.0,
-                    **kwargs):
-    """Apply sideband selection cuts with modified default parameters.
-    
-    This function calls select() with sideband-specific defaults that differ
-    from the standard selection. All parameters can be overridden via kwargs.
-    
     Parameters
     ----------
     indf : pandas.DataFrame
-        Input DataFrame with neutrino interaction data
+        Input DataFrame. Must have ``primshw.shw.reco_energy`` set — call
+        :func:`~nueana.preprocess.preprocess_mc` or
+        :func:`~nueana.preprocess.preprocess_data` first.
+    cuts : list of CutSpec, optional
+        Ordered cut sequence. Defaults to ``DEFAULT_CUTS`` from
+        :mod:`nueana.cuts`. Use :func:`modify_cut` to adjust individual cuts,
+        or build a list from scratch using :class:`~nueana.classes.CutSpec`.
+    stage : str, optional
+        Stop and return after this cut (matched by ``CutSpec.name``).
     savedict : bool, default False
-        Whether to return dict of all stages (overrides select's default of True)
-    min_conversion_gap : float, default 2
-        Minimum conversion gap (overrides select's default of 0.001)
-    max_conversion_gap : float, default 1000
-        Maximum conversion gap (overrides select's default of 2)
-    max_track_length : float, default 1000
-        Maximum track length in cm (overrides select's default of 200)
-    min_dedx : float, default 3
-        Minimum dE/dx on best plane (overrides select's default of 1.25)
-    max_dedx : float, default 6
-        Maximum dE/dx on best plane (overrides select's default of 2.5)
-    min_opening_angle : float, default 0.15
-        Minimum shower opening angle (overrides select's default of 0.03)
-    max_opening_angle : float, default 1.0
-        Maximum shower opening angle (overrides select's default of 0.15)
-    **kwargs
-        All other parameters are passed to select() and will use its defaults
-        unless explicitly specified here.
-    
+        If True, return a dict of DataFrames keyed by cut name instead
+        of the final DataFrame.
+    check_preprocessed : bool, default True
+        If True, warn when no preprocessing fixes (``_fix_*`` columns)
+        are detected on ``indf``. Suppress with ``check_preprocessed=False``
+        for DataFrames where preprocessing is not applicable.
+
     Returns
     -------
     pandas.DataFrame or dict
-        Result from select() with sideband-specific cuts applied.
+        Final selected DataFrame, or per-stage dict when
+        ``savedict=True`` or ``stage`` is set.
     """
-    df = select(indf,
-                savedict=savedict,
-                max_track_length=max_track_length,
-                min_conversion_gap=min_conversion_gap,
-                max_conversion_gap=max_conversion_gap,
-                min_dedx=min_dedx,
-                max_dedx=max_dedx,
-                min_opening_angle=min_opening_angle,
-                max_opening_angle=max_opening_angle,
-                **kwargs)
-    return df
+    if cuts is None:
+        from .analysis import DEFAULT_CUTS
+        cuts = DEFAULT_CUTS
 
-def define_ccnue_signal(indf: pd.DataFrame, prefix=None):
-    """Define signal/background categories for neutrino interactions.
-    
-    Categorizes events into signal (CC nue) and various background categories
-    based on truth information and fiducial volume.
-    
+    if check_preprocessed:
+        from .preprocess import applied_fixes
+        if not applied_fixes(indf):
+            warnings.warn(
+                "No preprocessing fixes detected on this DataFrame. "
+                "Call preprocess_mc() or preprocess_data() before select().",
+                stacklevel=2,
+            )
+
+    if stage is not None and stage not in {c.name for c in cuts}:
+        raise ValueError(
+            f"Unknown stage '{stage}'. Valid options: {[c.name for c in cuts]}"
+        )
+
+    df = indf.copy()
+
+    df_dict = {}
+    for spec in cuts:
+        df = df[_mask(df, spec)]
+        if savedict:
+            df_dict[spec.name] = df
+        if stage == spec.name:
+            return df_dict if savedict else df
+
+    return df_dict if savedict else df
+
+def define_signal_pi0(indf: pd.DataFrame, prefix=None):
+    """Define signal/background categories for the generic pi0 analysis.
+
+    Categorizes events into CCpi0 signal and various background categories
+    based on truth information and fiducial volume, using the HNL/pi0 signal
+    scheme (:data:`~nueana.analysis.signal_dict_hnl`).
+
     Parameters
     ----------
     indf : pandas.DataFrame
         Input DataFrame with MultiIndex columns containing truth information.
     prefix : str or tuple, optional
         Column prefix to access truth information. If None, uses top-level columns.
-    
+
     Returns
     -------
     pandas.DataFrame
-        DataFrame with added 'signal' column indicating event category using signal_dict.
+        DataFrame with added 'signal' column indicating event category using
+        ``signal_dict_hnl``.
     """
-    # Keep lexsorted axes for robust multi-index access without forcing a full copy.
-    nudf = ensure_lexsorted(ensure_lexsorted(indf, 0), 1)
+    from .analysis import signal_dict_hnl
 
-    if prefix is None:
-        mcdf = nudf
-    else:
-        mcdf = nudf[prefix]
-
-    whereFV = InFV(mcdf.position,det="SBND_nohighyz",inzback=0)
-    whereAV = InAV(df=mcdf.position)
-    whereCCnue = ((mcdf.iscc==1)  # require CC interaction
-                & (abs(mcdf.pdg)==12)  # require neutrino to be a nue
-                & (abs(mcdf.e.pdg)==11) # require electron to be the primary (?) 
-                & (mcdf.e.genE > 0.5) # require primary electron to deposit ___ MeV
-                )
-
-    if "signal" in nudf.columns:
-        signal = nudf["signal"].to_numpy(copy=True)
-    else:
-        signal = np.full(len(nudf), -1, dtype=np.int16)
-
-    # background
-    signal[whereFV & (mcdf.iscc==1) & (abs(mcdf.pdg)==14) & (mcdf.npi0>0)] = signal_dict["numuCCpi0"] # numu cc FV
-    signal[whereFV & (mcdf.iscc==0) & (mcdf.npi0 > 0)] = signal_dict["NCpi0"] # nc pi0 FV
-    signal[whereFV & (mcdf.iscc==1) & (abs(mcdf.pdg)==12)] = signal_dict["othernueCC"] # nue cc FV
-    signal[whereFV & (mcdf.iscc==1) & (abs(mcdf.pdg)==14) & (mcdf.npi0 == 0)] = signal_dict["othernumuCC"] # numu cc other FV
-    signal[whereFV & (mcdf.iscc==0) & (mcdf.npi0 == 0)] = signal_dict["otherNC"] # nc other FV
-    signal[whereAV & (signal < 0)] = signal_dict["nonFV"] # nonFV
-    signal[whereAV == False] = signal_dict["dirt"] # dirt
-    signal[np.isnan(mcdf.E)] = signal_dict['cosmic']
-
-    signal[whereFV & whereCCnue] = signal_dict["nueCC"]
-    nudf["signal"] = signal
-    if ((nudf.signal < 0) | (nudf.signal >= len(signal_dict))).any(): 
-        print("Warning: unidentified signal/bacgkr channels present.")
-    return nudf
-
-def define_generic(indf: pd.DataFrame, prefix=None):
-    """Define generic signal/background categories for neutrino interactions.
-    
-    Categorizes events into broad categories: CC nu, NC nu, non-FV, dirt, cosmic.
-    
-    Parameters
-    ----------
-    indf : pandas.DataFrame
-        Input DataFrame with MultiIndex columns containing truth information.
-    prefix : str or tuple, optional
-        Column prefix to access truth information. If None, uses top-level columns.
-    
-    Returns
-    -------
-    pandas.DataFrame
-        DataFrame with added 'signal' column indicating event category using generic_dict.
-    """
-    # sort by row 
-    indf = ensure_lexsorted(indf,0)
-    # sort by column make copy to preserve column ordering of original
-    nudf = ensure_lexsorted(indf.copy(),1)
-
-    if prefix==None: mcdf = nudf
-    else: mcdf = nudf[prefix]
-
-    whereFV = InFV(df=mcdf.position, inzback=0, det="SBND")
-    whereAV = InAV(df=mcdf.position)
-    
-    if "signal" not in nudf.columns: nudf["signal"] = -1    
-    # background
-    nudf["signal"] = np.where(whereAV == False, generic_dict["dirt"], nudf["signal"]) # dirt    
-    nudf["signal"] = np.where(whereAV, generic_dict["nonFV"], nudf['signal']) # nonFV
-    nudf["signal"] = np.where(whereFV & (mcdf.iscc==0), generic_dict["NCnu"], nudf["signal"])
-    nudf["signal"] = np.where(whereFV & (mcdf.iscc==1), generic_dict["CCnu"], nudf["signal"])
-    nudf["signal"] = np.where(np.isnan(mcdf.E), generic_dict['cosmic'], nudf["signal"])
-
-    if ((nudf.signal < 0) | (nudf.signal >= len(generic_dict))).any(): 
-        print("Warning: unidentified signal/bacgkr channels present.")
-    indf["signal"] = nudf["signal"]
-    return indf
-
-def define_signal(indf: pd.DataFrame, prefix=None):
-    """Define signal/background categories for neutrino interactions.
-    
-    Categorizes events into signal Pi0 and various background categories
-    based on truth information and fiducial volume.
-    
-    Parameters
-    ----------
-    indf : pandas.DataFrame
-        Input DataFrame with MultiIndex columns containing truth information.
-    prefix : str or tuple, optional
-        Column prefix to access truth information. If None, uses top-level columns.
-    
-    Returns
-    -------
-    pandas.DataFrame
-        DataFrame with added 'signal' column indicating event category using signal_dict.
-    """
     # Keep lexsorted axes for robust multi-index access without forcing a full copy.
     nudf = ensure_lexsorted(ensure_lexsorted(indf, 0), 1)
 
@@ -355,8 +220,6 @@ def define_signal(indf: pd.DataFrame, prefix=None):
                 & (abs(mcdf.pdg)==14)  # require neutrino to be a nue
                 & (mcdf.npi0>0) # require at least one pi0 in the final state
                 )
-    
-    #signal_pi0_dict = {"CCpi0":0, "NCpi0": 1, "othernumuCC":2, "otherNC": 3, "CCnue": 4, "nonFV":5, "dirt":6, "cosmic":7, "offbeam":8} 
 
     if "signal" in nudf.columns:
         signal = nudf["signal"].to_numpy(copy=True)
@@ -364,28 +227,37 @@ def define_signal(indf: pd.DataFrame, prefix=None):
         signal = np.full(len(nudf), -1, dtype=np.int16)
 
     # background
-    signal[whereFV & (mcdf.iscc==0) & (mcdf.npi0 > 0)] = signal_dict["NCpi0"] # nc pi0 FV
-    signal[whereFV & (mcdf.iscc==1) & (abs(mcdf.pdg)==14) & (mcdf.npi0 == 0)] = signal_dict["othernumuCC"] # numu cc other FV
-    signal[whereFV & (mcdf.iscc==0) & (mcdf.npi0 == 0)] = signal_dict["otherNC"] # nc other FV
-    signal[whereFV & (mcdf.iscc==1) & (abs(mcdf.pdg)==12)] = signal_dict["CCnue"] # nue cc FV
-    signal[whereAV & (signal < 0)] = signal_dict["nonFV"] # nonFV
-    signal[whereAV == False] = signal_dict["dirt"] # dirt
-    signal[np.isnan(mcdf.E)] = signal_dict['cosmic']
+    signal[whereFV & (mcdf.iscc==0) & (mcdf.npi0 > 0)] = signal_dict_hnl["NCpi0"] # nc pi0 FV
+    signal[whereFV & (mcdf.iscc==1) & (abs(mcdf.pdg)==14) & (mcdf.npi0 == 0)] = signal_dict_hnl["othernumuCC"] # numu cc other FV
+    signal[whereFV & (mcdf.iscc==0) & (mcdf.npi0 == 0)] = signal_dict_hnl["otherNC"] # nc other FV
+    signal[whereFV & (mcdf.iscc==1) & (abs(mcdf.pdg)==12)] = signal_dict_hnl["CCnue"] # nue cc FV
+    signal[whereAV & (signal < 0)] = signal_dict_hnl["nonFV"] # nonFV
+    signal[whereAV == False] = signal_dict_hnl["dirt"] # dirt
+    signal[np.isnan(mcdf.E)] = signal_dict_hnl['cosmic']
 
-    signal[whereFV & whereCCpi0] = signal_dict["CCpi0"]
+    signal[whereFV & whereCCpi0] = signal_dict_hnl["CCpi0"]
     nudf["signal"] = signal
-    if ((nudf.signal < 0) | (nudf.signal >= len(signal_dict))).any(): 
+    if ((nudf.signal < 0) | (nudf.signal >= len(signal_dict_hnl))).any():
         print("Warning: unidentified signal/bacgkr channels present.")
     return nudf
 
-def define_signal_hnl(indf):
 
-    #--------------------------------------------------------------------------#
-    #define signal for HNL sample: -1 for cosmic and 9 for HNL
+def define_signal_hnl(indf):
+    """Define signal for the HNL sample: everything (HNL and HNL cosmic) is signal."""
+    from .analysis import signal_dict_hnl
+
     signal_col = ('signal', '', '', '', '', '')
     mask_cosmic = np.isnan(indf[('slc', 'prtl', 'E', '', '', '')])
-    #mchnl_df.loc[mask_cosmic, signal_col] = constants.signal_dict['hnlcosmic']
-    indf.loc[mask_cosmic, signal_col] = signal_dict['hnl'] #also label HNL cosmic as HNL since they are part of the signal region
-    indf.loc[~mask_cosmic, signal_col] = signal_dict['hnl']
+    # also label HNL cosmic as HNL since they are part of the signal region
+    indf.loc[mask_cosmic, signal_col] = signal_dict_hnl['hnl']
+    indf.loc[~mask_cosmic, signal_col] = signal_dict_hnl['hnl']
 
     return indf
+
+
+def select_sideband(indf, cuts=None, **kwargs):
+    """Apply the sideband cut sequence. Accepts the same kwargs as ``select``."""
+    if cuts is None:
+        from .analysis import SIDEBAND_CUTS
+        cuts = SIDEBAND_CUTS
+    return select(indf, cuts=cuts, **kwargs)
