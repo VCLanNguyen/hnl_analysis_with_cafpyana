@@ -770,6 +770,7 @@ def plot_mc_hnl_data(mc_df: pd.DataFrame,
                      scale_nu: float = 1.0,
                      scale_hnl: float = 1.0,
                      hnl_categories: dict | None = None,
+                     hnl_systs: bool | SystematicsInput | SystematicsOutput | None = None,
                      config: PlottingConfig | None = None,
                      **kwargs) -> tuple[plt.Figure, plt.Axes, plt.Axes]:
     """Create a combined MC stack + HNL step histogram + data overlay plot with a data/MC ratio subplot.
@@ -783,6 +784,11 @@ def plot_mc_hnl_data(mc_df: pd.DataFrame,
     the same multi-entry dict to both without narrowing ``hnl_categories`` means every
     category gets iterated (and potentially legended) twice, once per call -- pass a
     narrowed ``hnl_categories`` (e.g. just the ``hnl`` entry) to avoid that.
+
+    Likewise, ``systs`` (from ``config``/``kwargs``) is used for the MC stack's error band.
+    The HNL step uses ``hnl_systs`` if given, else falls back to the same ``systs`` -- pass
+    a ``SystematicsOutput`` computed from the HNL sample specifically (its own POT/covariance)
+    rather than sharing the MC stack's, which was computed on a different sample.
 
     Parameters
     ----------
@@ -850,6 +856,8 @@ def plot_mc_hnl_data(mc_df: pd.DataFrame,
                  'percents': False, 'counts': False}
     if hnl_categories is not None:
         hnl_args['categories'] = hnl_categories
+    if hnl_systs is not None:
+        hnl_args['systs'] = hnl_systs
 
     data_hist, data_err, data_plot = data_plot_overlay(**data_args)
     mc_bins, mc_steps, mc_err, mc_dict = plot_var(**mc_args)
@@ -1028,6 +1036,7 @@ def plot_mc_hnl(mc_df: pd.DataFrame,
                 show_fom: bool = False,
                 fom_nsigma: float = 1.0,
                 hnl_categories: dict | None = None,
+                hnl_systs: bool | SystematicsInput | SystematicsOutput | None = None,
                 **kwargs) -> tuple[plt.Figure, plt.Axes]:
     """MC BNB stacked histogram + HNL step overlay, without data points.
 
@@ -1035,6 +1044,10 @@ def plot_mc_hnl(mc_df: pd.DataFrame,
     for the MC stack. The HNL step uses ``hnl_categories`` if given, else falls back to the
     same ``categories`` -- pass a narrowed ``hnl_categories`` (e.g. just the ``hnl`` entry)
     to avoid every category being iterated (and potentially legended) by both calls.
+
+    Likewise, ``hnl_systs`` overrides ``systs`` for the HNL step only -- pass a
+    ``SystematicsOutput`` computed from the HNL sample itself rather than sharing the
+    MC stack's.
     """
     if show_fom:
         fig = plt.figure(figsize=(figsize[0], figsize[1] + 2))
@@ -1049,6 +1062,8 @@ def plot_mc_hnl(mc_df: pd.DataFrame,
     hnl_args = dict(df=hnl_df, var=var, bins=bins, ax=ax, hist_filled=False, error_legend=True,  scale=scale_hnl, **kwargs)
     if hnl_categories is not None:
         hnl_args['categories'] = hnl_categories
+    if hnl_systs is not None:
+        hnl_args['systs'] = hnl_systs
 
     mc_bins, mc_steps, mc_err, mc_dict = plot_var(**mc_args)
     _, hnl_steps, hnl_err, hnl_dict   = plot_var(**hnl_args)
