@@ -1278,6 +1278,12 @@ def plot_syst_category_breakdown(
 
     cats_per_var = []
     cat_sums_per_var = []
+    # category -> (handle, label), keyed by category so a category present on an earlier
+    # subplot but absent from the last one (e.g. comparing two different samples with
+    # non-overlapping systematic coverage) still makes it into the shared legend. Later
+    # subplots overwrite earlier ones when both have the category, preserving the
+    # previous "last subplot wins" behavior where coverage actually overlaps.
+    legend_entries: dict = {}
 
     for ax, item in zip(axes, syst_vars):
         syst_output, bins, xlabel = item[0], item[1], item[2]
@@ -1313,20 +1319,24 @@ def plot_syst_category_breakdown(
             if category not in cat.index:
                 continue
             style = category_dict[category]
-            ax.stairs(
+            label = f"{style['label']} ({sums.get(category, 0.):.1%})"
+            handle = ax.stairs(
                 cat[category] * 100,
                 bins,
                 lw=1.8,
                 linestyle=style['line'],
-                label=f"{style['label']} ({sums.get(category, 0.):.1%})",
+                label=label,
                 color=style['color'],
                 alpha=0.8,
             )
+            legend_entries[category] = (handle, label)
 
         tot = _combine_syst_uncertainties(syst_df)
         total_sum = float(np.sqrt(np.sum(syst_df['unc_norm'] ** 2)))
         if tot.size:
-            ax.stairs(tot * 100, bins, lw=2, color='black', label=f'Total ({total_sum:.1%})')
+            total_label = f'Total ({total_sum:.1%})'
+            total_handle = ax.stairs(tot * 100, bins, lw=2, color='black', label=total_label)
+            legend_entries['__total__'] = (total_handle, total_label)
 
         ax.set_xlabel(xlabel,fontsize=12)
         _ylabel = "Uncertainty on the Cross Section [%]" if xsec else "Uncertainty on the Event Rate [%]"
@@ -1338,7 +1348,9 @@ def plot_syst_category_breakdown(
         ax.annotate(text=region_label, xy=(0.02, 0.925), xycoords='axes fraction',
                     fontsize=11, fontweight='bold', alpha=0.5)
 
-    axes[-1].legend(bbox_to_anchor=(1.05, 1), loc='upper left',
+    handles = [h for h, _ in legend_entries.values()]
+    labels  = [l for _, l in legend_entries.values()]
+    axes[-1].legend(handles, labels, bbox_to_anchor=(1.05, 1), loc='upper left',
                     title="Uncertainty Sources (Normalization %)")
 
     return fig, axes, cats_per_var, cat_sums_per_var
