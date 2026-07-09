@@ -10,20 +10,26 @@ import pandas as pd
 def timing_correction(indf, period=18.936, t0_offset=0, prefix='', ifData=False):
 
     var_name = 'flashTime_'+prefix
-    
+    var_col = ('slc', 'barycenterFM', var_name, '', '', '')
+    mod_col = ('slc', 'barycenterFM', var_name+'_mod', '', '', '')
+
     if ifData:
         #also correct T0
-        indf['slc', 'barycenterFM', var_name, '', '', ''] = indf.slc.barycenterFM.flashTime + indf.frameApplyAtCaf/1e3
+        base = indf.slc.barycenterFM.flashTime + indf.frameApplyAtCaf/1e3
     else:
-        indf['slc', 'barycenterFM', var_name, '', '', ''] = indf.slc.barycenterFM.flashTime
+        base = indf.slc.barycenterFM.flashTime
 
     # convert us to ns
     # align to detector front face z=0
     # align to t=0 so first peak is at period/2
-    indf['slc', 'barycenterFM', var_name, '', '', ''] = indf.slc.barycenterFM[var_name]*1000 - indf.slc.vertex.z/29.97 + t0_offset + period/2
+    # computed as a local Series first instead of writing the base value to indf and
+    # immediately reading it back to transform it -- same result, one DataFrame column
+    # write instead of two.
+    corrected = base*1000 - indf.slc.vertex.z/29.97 + t0_offset + period/2
+    indf[var_col] = corrected
 
     #apply modulo to fold into one period
-    indf['slc', 'barycenterFM', var_name+'_mod', '', '', ''] = indf.slc.barycenterFM[var_name]%period
+    indf[mod_col] = corrected % period
     return indf
 
 #=======================================================================#
@@ -37,7 +43,10 @@ def data_filter_bad(indf, bad_dict):
         tmin = v[0]
         tmax = v[1]
 
-        mask = (indf['tdcRwm'].astype(np.int64) >= tmin) & (indf['tdcRwm'].astype(np.int64) <= tmax)
+        # tdcRwm.astype computed once and reused for both comparisons, instead of once
+        # per comparison.
+        tdc = indf['tdcRwm'].astype(np.int64)
+        mask = (tdc >= tmin) & (tdc <= tmax)
         nfilter += (len(indf[mask]))
         indf = indf[~mask]
 
@@ -53,20 +62,32 @@ def data_correct_good(indf, good_dict, odict, pdict):
     ncorrect = 0
     df_list = []
 
+    # tdcRwm.astype computed once, outside the loop -- indf itself is never reassigned
+    # across iterations here (unlike data_filter_bad, where each iteration's mask must
+    # be computed against the previous iteration's already-filtered indf), so this is
+    # safe to hoist rather than recomputing on every one of good_dict's periods.
+    tdc = indf['tdcRwm'].astype(np.int64)
+
     for k,v in good_dict.items():
         tmin = v[0]
         tmax = v[1]
 
-        mask = (indf['tdcRwm'].astype(np.int64) >= tmin) & (indf['tdcRwm'].astype(np.int64) <= tmax)
+        mask = (tdc >= tmin) & (tdc <= tmax)
 
         df_chunk = indf[mask]
         ncorrect += (len(df_chunk))
 
         data_first_peak = odict[k]
-        data_period = pdict[k] 
+        data_period = pdict[k]
 
-        dfchunk = timing_correction(df_chunk, period=data_period, t0_offset=data_first_peak, prefix='calib', ifData=True)
-        
+        # Append timing_correction's actual return value, not the pre-correction
+        # df_chunk -- timing_correction currently mutates its input in place (so this
+        # produced the same numeric result either way), but appending df_chunk here
+        # instead of the value the code just computed and named for that purpose was
+        # fragile: it silently depended on that in-place-mutation implementation detail
+        # rather than on timing_correction's documented return value.
+        df_chunk = timing_correction(df_chunk, period=data_period, t0_offset=data_first_peak, prefix='calib', ifData=True)
+
         df_list.append(df_chunk)
 
     print(' Correct {:.0f} slices'.format(ncorrect))

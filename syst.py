@@ -305,7 +305,7 @@ def get_syst_hists(reco_df: pd.DataFrame,
     # unisim
     if len(unisim_col)>0:
         for col in tqdm(unisim_col, desc='Running through unisims'):
-            weights = indf[col].values.astype(np.float64)
+            weights = reco_df[col].values.astype(np.float64)
             weights[np.isnan(weights)] = 1.0
             weights[(weights>10) | (weights < 0)] = 1.0 
             weights *= scaling
@@ -688,7 +688,17 @@ def get_syst_df(dicts: list, cv_hist: np.ndarray) -> pd.DataFrame:
                 })
                 continue
 
-            extracted_key = _KEY_EXTRACTORS[category](raw_key)
+            # Extractors assume a specific underscore-separated naming convention (e.g.
+            # GENIEReWeight_SBN_v1_multisigma_<knob>) and can produce an empty string or
+            # raise IndexError on keys that don't match it (e.g. a bare "GENIE" column with
+            # no per-knob breakdown at all). Fall back to the raw key rather than losing the
+            # legend label or crashing.
+            try:
+                extracted_key = _KEY_EXTRACTORS[category](raw_key)
+            except IndexError:
+                extracted_key = ""
+            if not extracted_key:
+                extracted_key = raw_key
             if category == "GENIE" and any(alias in raw_key for alias in _GENIE_ALIASES):
                 extracted_key += "+"
 

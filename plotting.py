@@ -1358,13 +1358,14 @@ def plot_syst_category_breakdown(
 
 def plot_syst_breakdown(
     syst_vars: list[tuple],
-    category: str,
+    category: str | None,
     category_dict: dict,
     region_label: str | None = None,
     figsize: tuple[int, int] | None = None,
     xsec: bool = False,
+    top_n: int = 5,
 ) -> tuple[plt.Figure, np.ndarray]:
-    """Plot the per-source systematics breakdown for one category.
+    """Plot the per-source systematics breakdown for one category, or across all categories.
 
     Parameters
     ----------
@@ -1372,10 +1373,16 @@ def plot_syst_breakdown(
         One entry per variable, each a 3- or 4-tuple:
         ``(SystematicsOutput, bins, xlabel)`` or
         ``(SystematicsOutput, bins, xlabel, bin_labels)``.
-    category : str
-        Category key from ``category_dict`` to plot.
+    category : str or None
+        Category key from ``category_dict`` to plot. If None, ranks individual
+        sources by ``unc_norm`` across *all* categories combined and draws the
+        top ``top_n`` -- ``syst_df``'s ``top5`` column is ranked per-category
+        (see :func:`~nueana.syst.get_syst_df`), so it can't answer "top N
+        regardless of category"; that ranking is redone here instead.
     category_dict : dict
         Mapping of category name → style dict (``color``, ``label``, ``line``).
+        Unused when ``category`` is None (the "Total" line has no single
+        category to style from).
     region_label : str, optional
         Text stamped in the corner ojf each subplot.
     figsize : tuple, optional
@@ -1383,6 +1390,9 @@ def plot_syst_breakdown(
     xsec : bool, default False
         If True, plot uncertainties on the cross section (``xsec_syst_df``)
         instead of the event rate (``rate_syst_df``).
+    top_n : int, default 5
+        Number of individual sources to draw, ranked by ``unc_norm``. Applies
+        in both the single-category and ``category=None`` modes.
 
     Returns
     -------
@@ -1392,8 +1402,12 @@ def plot_syst_breakdown(
     if figsize is None:
         figsize = (5 * n, 4)
 
-    this_color = category_dict[category]['color']
-    this_label = category_dict[category]['label']
+    if category is not None:
+        this_color = category_dict[category]['color']
+        this_label = category_dict[category]['label']
+    else:
+        this_color = 'black'
+        this_label = 'All categories'
 
     fig, axes = plt.subplots(1, n, figsize=figsize)
     if n == 1:
@@ -1410,14 +1424,22 @@ def plot_syst_breakdown(
         else:
             syst_df = syst_output.rate_syst_df
 
-        this_df = syst_df[syst_df.category == category].sort_values('unc_norm', ascending=False)
+        if category is not None:
+            this_df = syst_df[syst_df.category == category].sort_values('unc_norm', ascending=False)
+            # top5 is ranked per-category already; draw every source (faint), label only top_n.
+            is_top = this_df['unc_norm'].rank(method='first', ascending=False) <= top_n
+            plot_df = this_df
+        else:
+            this_df = syst_df.sort_values('unc_norm', ascending=False)
+            plot_df = this_df.head(top_n)
+            is_top = pd.Series(True, index=plot_df.index)
 
-        for _, row in this_df.iterrows():
+        for idx, row in plot_df.iterrows():
             ax.stairs(
                 row.unc_diag * 100,
                 bins,
                 lw=1.5,
-                label=row.key + f" ({row['unc_norm']:.1%})" if row.top5 else "",
+                label=(row.key + f" ({row['unc_norm']:.1%})") if is_top.loc[idx] else "",
                 alpha=0.5,
             )
 
@@ -1434,7 +1456,7 @@ def plot_syst_breakdown(
         ax.set_xticks(bins)
         if bin_labels is not None:
             ax.set_xticklabels(bin_labels)
-        ax.legend(title='top 5 sources', fontsize=9)
+        ax.legend(title=f'top {top_n} sources', fontsize=9)
         if region_label is not None:
             ax.annotate(text=region_label, xy=(0.02, 0.925), xycoords='axes fraction',
                         fontsize=11, fontweight='bold', alpha=0.5)

@@ -44,7 +44,7 @@ from functools import partial
 from . import config
 from .classes import CutSpec, VariableConfig
 from .selection import modify_cut, drop_cuts, select
-from .utils import ensure_lexsorted
+from .utils import ensure_lexsorted, sci_notation
 from makedf.util import *
 from pyanalib.pandas_helpers import *
 
@@ -54,7 +54,8 @@ __all__ = [
     'RHO', 'N_A', 'M_AR', 'V_SBND', 'NTARGETS',
     # categories
     'signal_categories', 'signal_categories_external', 'signal_dict',
-    'signal_categories_hnl', 'signal_dict_hnl',
+    'signal_categories_hnl', 'signal_dict_hnl', 'background_categories_hnl',
+    'HNL_DISPLAY_SCALE', 'hnl_categories_for_mass',
     'generic_categories', 'generic_dict',
     'pdg_categories', 'pdg_dict',
     'mode_categories', 'mode_dict',
@@ -142,6 +143,49 @@ signal_categories_hnl = {
     "hnlcosmic":    {"value": 10, "label": "HNL Cosmic",              "color": "#131E29"},  # MidnightBlack
 }
 signal_dict_hnl = {k: v["value"] for k, v in signal_categories_hnl.items()}
+
+# Background-only view of signal_categories_hnl, for the MC stack in plot_mc_hnl_data/
+# plot_mc_hnl. Excludes 'hnl'/'hnlcosmic' -- those two are only ever populated by an
+# MC-HNL sample itself (never mcbnb/dtbnb), and are passed separately via
+# `hnl_categories=` for the HNL step overlay, so the stack's own dict has no reason to
+# carry them.
+background_categories_hnl = {k: v for k, v in signal_categories_hnl.items()
+                              if k not in ('hnl', 'hnlcosmic')}
+
+# Per-mass display scale for the HNL step overlay in plot_mc_hnl_data/plot_mc_hnl --
+# how much to visually inflate a given mass point's histogram so it's visible next to
+# the (much larger) MC background stack. Physically meaningless -- affects only
+# `scale_hnl=`, not real event counts -- tuned by eye per mass point.
+HNL_DISPLAY_SCALE = {
+    140: 4000,
+    165: 40,
+    190: 10,
+    215: 3,
+    240: 2,
+    260: 1,
+}
+
+
+def hnl_categories_for_mass(mass, simU, scale=None):
+    """Build (scale, plotU, hnl_categories) for plot_mc_hnl_data/plot_mc_hnl's
+    `scale_hnl=`/`hnl_categories=`, with the HNL legend entry relabeled to this mass's
+    display-scaled |U|^2.
+
+    `scale` defaults to HNL_DISPLAY_SCALE[mass] if not given explicitly.
+
+    `hnl_categories` here is scoped to just the 'hnl' entry -- meant to be passed
+    separately from `categories=background_categories_hnl`, since sharing one dict
+    across both of plot_mc_hnl_data's internal plot_var calls means every category gets
+    iterated (and potentially legended) by both calls.
+    """
+    if scale is None:
+        scale = HNL_DISPLAY_SCALE[mass]
+    plotU = simU * np.sqrt(scale)
+    hnllabel = (str(mass) + r' MeV HNL $\nu\pi^0$' + '\n'
+                + r'|U$_{\mu 4}$|$^2$ = ' + str(sci_notation(plotU, 2, 2)))
+    hnl_categories = {'hnl': {**signal_categories_hnl['hnl'], 'label': hnllabel}}
+    return scale, plotU, hnl_categories
+
 
 # PDG categories for plotting. The 5 named entries use pdg-code filtering; the 4
 # extras (pdg=None) use filter-based population selection. Insertion order matters:

@@ -8,7 +8,13 @@ import pandas as pd
 import numpy as np
 
 __all__ = ['get_n_split', 'print_keys', 'load_dfs', 'load_mc', 'load_data',
-           'correct_cosmic_weight_mevprtl_df']
+           'load_mchnl', 'correct_cosmic_weight_mevprtl_df']
+
+# Sentinel distinguishing "caller didn't pass this" from "caller explicitly
+# passed None" -- load_mc/load_data use None to mean "skip this step", so the
+# unset-default can't also be None. See load_mc's rec_key/preprocess_fn/
+# define_signal_fn and load_data's rec_key/preprocess_fn/offbeam_signal_value.
+_UNSET = object()
 
 # credit for first three functions to Mun! 
 def get_n_split(file):
@@ -60,17 +66,50 @@ def load_dfs(file, keys2load, n_max_concat=10, start_split=0):
         Dictionary mapping key names to concatenated DataFrames.
     """
     out_df_dict = {}
-    this_n_keys = get_n_split(file) - start_split
-    n_concat = min(n_max_concat, this_n_keys)
-    for key in keys2load:
-        dfs = []  # collect all splits for this key
-        for i in range(start_split, start_split + n_concat):
-            this_df = pd.read_hdf(file, key=f"{key}_{i}")
-            dfs.append(this_df)
-        out_df_dict[key] = pd.concat(dfs, ignore_index=False)
+    # Single open HDFStore for the whole read, instead of one open+close per
+    # pd.read_hdf(file, key=...) call (get_n_split's own read plus one per
+    # key-per-split) -- meaningfully fewer file opens for files with several keys
+    # and/or several splits, and cheaper on this project's NFS-backed filesystem.
+    with pd.HDFStore(file, mode='r') as store:
+        this_n_keys = store['split'].n_split.iloc[0] - start_split
+        n_concat = min(n_max_concat, this_n_keys)
+        for key in keys2load:
+            dfs = [store[f'{key}_{i}'] for i in range(start_split, start_split + n_concat)]
+            out_df_dict[key] = pd.concat(dfs, ignore_index=False)
     return out_df_dict
 
 def correct_cosmic_weight_mevprtl_df(indf_rec, indf_truth, indf_hdr):
+    """Correct the cosmic-background event weight in an HNL MeVPrtl reco DataFrame
+    using the matching truth-level total weight.
+
+    Reco and truth don't share a common natural row index -- their sub-object index
+    levels differ (``rec.slc..index`` vs. ``rec.mc.prtl..index``) -- so they're joined
+    via a composite key built from ``evt`` (looked up per-row from the header table)
+    instead of the natural index.
+
+    When present, ``file_idx`` is included in that composite key alongside
+    ``(__ntuple, entry, evt)``. This matters for any file produced by
+    ``concat_hdf.py``: it resets ``__ntuple``/``entry`` numbering independently per
+    source shard and adds a ``file_idx`` level specifically to disambiguate the
+    result, so omitting ``file_idx`` from the join key causes rows from different
+    shards to collide on the same ``(__ntuple, entry, evt)`` triple -- ``reindex``
+    then raises ``ValueError: cannot handle a non-unique multi-index`` (this crashed
+    on any concatenated multi-shard HNL sample prior to this fix; verified against
+    the real ``mchnl_nupi0_m260.df``, 15 shards). Falls back to the
+    ``(__ntuple, entry, evt)``-only key when ``file_idx`` isn't present on either
+    side, matching the original behaviour for a raw, non-concatenated single-shard
+    file.
+
+    Parameters
+    ----------
+    indf_rec : pd.DataFrame
+        HNL reco (slice-level) DataFrame.
+    indf_truth : pd.DataFrame
+        HNL MeVPrtl truth DataFrame.
+    indf_hdr : pd.DataFrame
+        Header DataFrame, used to look up ``evt`` for both ``indf_rec`` and
+        ``indf_truth``.
+    """
 
     #Step 1: Build total event weight in reco and truth HNL dataframes
 
@@ -88,37 +127,39 @@ def correct_cosmic_weight_mevprtl_df(indf_rec, indf_truth, indf_hdr):
     indf_truth[truth_totalw_column] = indf_truth[truth_rayw_column] * indf_truth[truth_decayw_column] * indf_truth[truth_fluxw_column]
 
     #-------------------------------------------------------------------------------------#
-    #Step 2: Join evt from header dataframe into reco dataframe using shared (__ntuple, entry) index
+    #Step 2: Join evt from header dataframe into reco dataframe using reco's own full index
     evt_col = ('evt', '', '', '', '', '')
     indf_rec[evt_col] = indf_hdr['evt'].reindex(indf_rec.index)
 
     #-------------------------------------------------------------------------------------#
-    # Step 3: Join truth total weight into reco dataframe on (__ntuple, entry, evt)
+    # Step 3: Join truth total weight into reco dataframe on (file_idx, __ntuple, entry, evt)
+    # -- file_idx included only when present on both sides, see docstring.
     totalw_truth_col = ('weights_mc_truth', '', '', '', '', '')
 
     truth_total_weight = indf_truth[truth_totalw_column]
     truth_evt = indf_hdr['evt'].reindex(indf_truth.index).values
 
+    join_levels = ['__ntuple', 'entry']
+    if 'file_idx' in indf_truth.index.names and 'file_idx' in indf_rec.index.names:
+        join_levels = ['file_idx'] + join_levels
+    join_names = join_levels + ['evt']
+
     truth_key = pd.MultiIndex.from_arrays(
-        [
-            indf_truth.index.get_level_values(0),
-            indf_truth.index.get_level_values(1),
-            truth_evt,
-        ],
-        names=['__ntuple', 'entry', 'evt'],
+        [indf_truth.index.get_level_values(lvl) for lvl in join_levels] + [truth_evt],
+        names=join_names,
     )
     truth_lookup = pd.Series(truth_total_weight.values, index=truth_key)
 
     reco_key = pd.MultiIndex.from_arrays(
-        [
-            indf_rec.index.get_level_values(0),
-            indf_rec.index.get_level_values(1),
-            indf_rec[evt_col].values,
-        ],
-        names=['__ntuple', 'entry', 'evt'],
+        [indf_rec.index.get_level_values(lvl) for lvl in join_levels] + [indf_rec[evt_col].values],
+        names=join_names,
     )
 
-    indf_rec[totalw_truth_col] = truth_lookup.reindex(reco_key).to_numpy()
+    # .map() instead of Series.reindex(): a direct lookup against reco_key's own order
+    # rather than reindex's stricter re-alignment machinery -- same result, cheaper
+    # since it doesn't need to build/validate reco_key as a standalone index in its
+    # own right the way reindex does.
+    indf_rec[totalw_truth_col] = reco_key.map(truth_lookup)
 
     #-------------------------------------------------------------------------------------#
     # Step 4: Correct cosmic weight in reco dataframe using truth total weight for cosmic entries
@@ -148,6 +189,9 @@ def load_mc(
     chunk_splits: int = 1,
     add_pi0: bool = False,
     excl_mc_df=None,
+    rec_key: str = 'nuecc',
+    preprocess_fn=_UNSET,
+    define_signal_fn=_UNSET,
 ) -> tuple:
     """Load, preprocess, and optionally select an MC HDF5 file in chunks.
 
@@ -180,6 +224,23 @@ def load_mc(
         :func:`~nueana.exclusive.remove_signal_overlap` is called on the
         final concatenated result to strip events that are already covered
         by the exclusive sample and would otherwise be double-counted.
+    rec_key : str, default 'nuecc'
+        Key of the main slc-level table within ``keys``/the HDF5 file (e.g.
+        ``'rec'`` for makers that don't use the nueCC-style ``'nuecc'`` key).
+    preprocess_fn : callable or None, optional
+        Called as ``preprocess_fn(df)`` on each chunk's ``rec_key`` table
+        before selection. Defaults to :func:`~nueana.preprocess.preprocess_mc`
+        (nueCC's flash PE-scale/flash-time fixes). Pass ``None`` to skip
+        preprocessing entirely -- e.g. when the caller applies its own
+        analysis-specific fixes after loading instead.
+    define_signal_fn : callable, optional
+        Called as ``define_signal_fn(df)`` on each merged chunk to stamp
+        signal categories. Defaults to
+        ``lambda df: analysis.define_signal(df, prefix=('slc', 'truth'))``.
+        Pass a different single-argument callable (e.g.
+        ``nue.define_signal_hnl`` or
+        ``functools.partial(nue.define_signal_pi0, prefix=('slc', 'truth'))``)
+        for a non-nueCC signal scheme.
 
     Returns
     -------
@@ -203,6 +264,10 @@ def load_mc(
 
     if keys is None:
         keys = _DEFAULT_MC_KEYS
+    if preprocess_fn is _UNSET:
+        preprocess_fn = preprocess_mc
+    if define_signal_fn is _UNSET:
+        define_signal_fn = lambda df: define_signal(df, prefix=('slc', 'truth'))
 
     n_total  = get_n_split(file)
     n_splits = min(max_splits, n_total) if max_splits is not None else n_total
@@ -222,11 +287,11 @@ def load_mc(
         if 'histgenevtdf' in dfs: ngen += dfs['histgenevtdf'].TotalGenEvents.sum()
         elif 'hdr' in dfs:        ngen += dfs['hdr'][dfs['hdr'].first_in_subrun == 1].ngenevt.sum()
 
-        df    = preprocess_mc(dfs['nuecc'])
+        df    = preprocess_fn(dfs[rec_key]) if preprocess_fn is not None else dfs[rec_key]
         sel   = select(df, cuts=cuts) if cuts is not None else df
         chunk = merge_hdr(dfs['hdr'], sel)
         del dfs
-        chunk = define_signal(chunk, prefix=('slc', 'truth'))
+        chunk = define_signal_fn(chunk)
         if add_pi0:
             chunk = _add_pi0(chunk)
         chunks.append(chunk)
@@ -245,6 +310,9 @@ def load_data(
     keys: list | None = None,
     onbeam: bool = True,
     cuts=None,
+    rec_key: str = 'nuecc',
+    preprocess_fn=_UNSET,
+    offbeam_signal_value=_UNSET,
 ) -> tuple:
     """Load, preprocess, and optionally select a data HDF5 file.
 
@@ -261,13 +329,24 @@ def load_data(
     cuts : list of CutSpec, optional
         If supplied, passed to :func:`~nueana.selection.select`.
         When None the full preprocessed DataFrame is returned.
+    rec_key : str, default 'nuecc'
+        Key of the main slc-level table within ``keys``/the HDF5 file (e.g.
+        ``'rec'`` for makers that don't use the nueCC-style ``'nuecc'`` key).
+    preprocess_fn : callable or None, optional
+        Called as ``preprocess_fn(df)`` on the merged table before selection.
+        Defaults to :func:`~nueana.preprocess.preprocess_data` (nueCC's
+        flash-time offset fix). Pass ``None`` to skip preprocessing entirely.
+    offbeam_signal_value : int, optional
+        Signal value stamped on off-beam rows when ``onbeam=False``. Defaults
+        to nueCC's ``analysis.signal_dict['offbeam']``. Pass e.g.
+        ``nue.signal_dict_hnl['offbeam']`` for a non-nueCC signal scheme.
 
     Returns
     -------
     df : pd.DataFrame
         Preprocessed (and optionally selected) data DataFrame with header
         columns merged in and pi0 kinematics added.  Off-beam DataFrames
-        also have ``signal`` set to ``signal_dict['offbeam']``.
+        also have ``signal`` set to ``offbeam_signal_value``.
     pot : float
         Accumulated on-beam POT (0.0 for off-beam files).
     ngates : float
@@ -281,10 +360,14 @@ def load_data(
 
     if keys is None:
         keys = _DEFAULT_DATA_KEYS
+    if preprocess_fn is _UNSET:
+        preprocess_fn = preprocess_data
+    if offbeam_signal_value is _UNSET:
+        offbeam_signal_value = signal_dict['offbeam']
 
     dfs = load_dfs(file, keys2load=keys)
-    df  = merge_hdr(dfs['hdr'], dfs['nuecc'])
-    df  = preprocess_data(df)
+    df  = merge_hdr(dfs['hdr'], dfs[rec_key])
+    df  = preprocess_fn(df) if preprocess_fn is not None else df
 
     pot    = 0.0
     ngates = 0.0
@@ -294,10 +377,80 @@ def load_data(
     else:
         ngates = dfs['hdr'].noffbeambnb.sum()
         signal = pd.Series(
-            np.ones(len(df), dtype=np.int16) * signal_dict['offbeam'],
+            np.ones(len(df), dtype=np.int16) * offbeam_signal_value,
             name="signal", index=df.index,
         )
         df = multicol_add(df, signal)
 
     sel = select(df, cuts=cuts) if cuts is not None else df
     return sel, pot, ngates
+
+
+def load_mchnl(
+    file: str,
+    keys: list | None = None,
+    mevprtl_key: str = 'mevprtl',
+    rec_key: str = 'rec',
+) -> tuple:
+    """Load and preprocess an HNL MeVPrtl MC HDF5 file.
+
+    Applies the MeVPrtl-specific cosmic-weight correction
+    (:func:`correct_cosmic_weight_mevprtl_df`), stamps HNL signal categories
+    (:func:`~nueana.selection.define_signal_hnl`), and merges header columns
+    in. Also extracts the simulated mixing angle and HNL mass from the truth
+    table, since every HNL sample needs these for scaling/labeling.
+
+    Replaces a load sequence that was copy-pasted across 7 HNL analysis
+    notebooks (``load_dfs`` + ``correct_cosmic_weight_mevprtl_df`` +
+    ``define_signal_hnl`` + ``merge_hdr``, plus manual POT/simU/hnlM
+    extraction) -- the copy-paste drift had already caused a real bug in one
+    of them (a missing ``merge_hdr`` call).
+
+    Parameters
+    ----------
+    file : str
+        Path to the HDF5 file.
+    keys : list of str, optional
+        Table keys to load, not including ``mevprtl_key`` (added automatically
+        if missing). Defaults to ``['hdr', rec_key, 'histpotdf']``.
+    mevprtl_key : str, default 'mevprtl'
+        Key of the MeVPrtl truth table.
+    rec_key : str, default 'rec'
+        Key of the main slc-level table.
+
+    Returns
+    -------
+    df : pd.DataFrame
+        Preprocessed HNL DataFrame with header columns merged in and signal
+        categories defined.
+    pot : float
+        HNL MC POT (unscaled).
+    info : dict
+        ``{'simU': ..., 'hnlM': ...}`` -- simulated mixing angle squared and
+        HNL mass in MeV (already converted from the truth table's GeV),
+        extracted from the truth table. Build a legend label from these at
+        the call site -- exact wording/formatting varies by analysis (nu_ee
+        vs. nu_pi0 channel, mass-dependent scale factors, ...), so it isn't
+        baked in here.
+    """
+    from .selection import define_signal_hnl
+    from .utils import merge_hdr
+
+    if keys is None:
+        keys = ['hdr', rec_key, 'histpotdf']
+    load_keys = keys if mevprtl_key in keys else keys + [mevprtl_key]
+
+    # load_dfs defaults to n_max_concat=10 -- silently loads only the first 10 HDF5
+    # splits if not told otherwise. Pass the file's actual split count explicitly so
+    # a future mchnl production with more than 10 splits doesn't get silently
+    # truncated here.
+    dfs = load_dfs(file, keys2load=load_keys, n_max_concat=get_n_split(file))
+    df  = correct_cosmic_weight_mevprtl_df(dfs[rec_key], dfs[mevprtl_key], dfs['hdr'])
+    df  = define_signal_hnl(df)
+    df  = merge_hdr(dfs['hdr'], df)
+
+    pot  = dfs['histpotdf'].TotalPOT.sum() if 'histpotdf' in dfs else dfs['hdr'].pot.sum()
+    simU = df[('slc', 'prtl', 'C2', '', '', '')].dropna().unique()[0]
+    hnlM = df[('slc', 'prtl', 'M', '', '', '')].dropna().unique()[0] * 1000  # GeV -> MeV
+
+    return df, pot, {'simU': simU, 'hnlM': hnlM}

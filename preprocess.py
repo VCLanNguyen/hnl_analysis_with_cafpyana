@@ -28,12 +28,22 @@ MC + data fixes
 Pi0 fix (opt-in, call after preprocess_mc / preprocess_data)
 -------------------------------------------------------------
 - :func:`add_pi0`  — pi0 kinematics: opening angle, invariant mass, momentum
+
+Derived kinematic variables (opt-in, call whenever needed)
+------------------------------------------------------------
+- :func:`add_variables` — per-shower angle_z/phi, transverse distance to beam, and the
+  two-shower transverse-mass proxy m_alt. Topology-agnostic (only touches primshw/secshw
+  shower columns, gated on their existence -- unlike the fixes above, works the same on
+  nueCC or HNL/pi0 'rec' tables). Was previously its own module (new_variables.py),
+  folded in here since it serves the same "derive columns before analysis" purpose.
 """
 
 import warnings
 
 import numpy as np
 import pandas as pd
+
+from .utils import ensure_lexsorted
 
 __all__ = [
     'is_fix_applied',
@@ -46,6 +56,7 @@ __all__ = [
     'fix_prim_shw_energy',
     'fix_sec_shw_energy',
     'add_pi0',
+    'add_variables',
 ]
 
 _FIX_PREFIX = '_fix_'
@@ -205,15 +216,16 @@ def preprocess_data(df: pd.DataFrame, *, flash_time_offset: float = 0.19) -> pd.
 
 
 def add_phi(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute azimuthal angle φ (degrees) for the primary shower and track.
+    """Compute azimuthal angle φ (degrees) for the primary shower and, if present, track.
 
-    Stores results in ``primshw.shw.dir.phi`` and ``primtrk.trk.dir.phi``.
-    Track phi will be NaN for events with no reconstructed track.
+    Stores results in ``primshw.shw.dir.phi`` and, only when track direction columns
+    exist, ``primtrk.trk.dir.phi`` -- topologies with no track-level table at all (e.g.
+    HNL/pi0's 'rec' table has no primtrk) get shower phi only, rather than crashing.
 
     Parameters
     ----------
     df : pd.DataFrame
-        DataFrame containing ``primshw.shw.dir.{x,y}`` and
+        DataFrame containing ``primshw.shw.dir.{x,y}`` and, optionally,
         ``primtrk.trk.dir.{x,y}``.
     """
     name = 'phi'
@@ -223,14 +235,16 @@ def add_phi(df: pd.DataFrame) -> pd.DataFrame:
     pad = [''] * max(0, depth - 4)
     shw_col = tuple(['primshw', 'shw', 'dir', 'phi'] + pad)
     trk_col = tuple(['primtrk', 'trk', 'dir', 'phi'] + pad)
+    trk_x_col = tuple(['primtrk', 'trk', 'dir', 'x'] + pad)
+    trk_y_col = tuple(['primtrk', 'trk', 'dir', 'y'] + pad)
 
     # Compute phi values
-    shw_phi = np.arctan2(df.primshw.shw.dir.x, df.primshw.shw.dir.y) * 180 / np.pi
-    trk_phi = np.arctan2(df.primtrk.trk.dir.x, df.primtrk.trk.dir.y) * 180 / np.pi
+    new_cols = {shw_col: np.arctan2(df.primshw.shw.dir.x, df.primshw.shw.dir.y) * 180 / np.pi}
+    if trk_x_col in df.columns and trk_y_col in df.columns:
+        new_cols[trk_col] = np.arctan2(df.primtrk.trk.dir.x, df.primtrk.trk.dir.y) * 180 / np.pi
 
     # Batch add columns to avoid fragmentation
-    new_cols = pd.DataFrame({shw_col: shw_phi, trk_col: trk_phi})
-    df = pd.concat([df, new_cols], axis=1)
+    df = pd.concat([df, pd.DataFrame(new_cols)], axis=1)
     return _mark_applied(df, name)
 
 
@@ -379,4 +393,107 @@ def add_pi0(df: pd.DataFrame) -> pd.DataFrame:
     }, index=df.index)
 
     df = pd.concat([df, new_cols], axis=1)
+    return _mark_applied(df, name)
+
+
+# ---------------------------------------------------------------------------
+# Derived kinematic variables (topology-agnostic)
+# ---------------------------------------------------------------------------
+
+def add_variables(df: pd.DataFrame, beam_x: float = -74.0, beam_y: float = 0.0) -> pd.DataFrame:
+    """Add derived kinematic columns to a slice-level DataFrame from make_topo_df.
+
+    Unlike the fixes above, this only ever touches primshw/secshw shower columns
+    (each gated on existence), so it works unchanged on nueCC or HNL/pi0 'rec' tables.
+
+    Columns added:
+
+    Per shower (primshw / secshw if present):
+      (shw, 'shw', 'angle_z', '', '', '')          -- angle w.r.t. beam axis z [deg]
+      (shw, 'shw', 'phi', '', '', '')              -- azimuthal angle [deg]
+
+    Slice-level:
+      ('slc', 'vertex', 'transverse_distance_beam_2', '', '', '')
+                                                    -- d_T^2 = (vtx_x-beam_x)^2 + (vtx_y-beam_y)^2 [cm^2]
+
+    Two-shower only (when secshw columns are present):
+      ('slc', 'm_alt', '', '', '', '')              -- transverse mass of the shower pair [MeV]
+                                                       m_alt = sqrt(2*ET1*ET2*(1-cos_theta))*1000
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Slice-level DataFrame produced by topology.make_topo_df.
+    beam_x, beam_y : float
+        Beam centre x and y position [cm]. Default: (-74, 0).
+
+    Returns
+    -------
+    pd.DataFrame
+        Same DataFrame with new columns appended.
+    """
+    name = 'variables'
+    if _skip_if_applied(df, name):
+        return df
+
+    df = ensure_lexsorted(df, axis=1)
+    # Ensures primshw.shw.dir.phi exists (and primtrk.trk.dir.phi too, if that table is
+    # present) -- idempotent, so a no-op if add_phi already ran. Reused below instead of
+    # recomputing the same arctan2 a second time under a different column path.
+    df = add_phi(df)
+
+    def _angle_z(shw):
+        dx = df[(shw, 'shw', 'dir', 'x', '', '')].values
+        dy = df[(shw, 'shw', 'dir', 'y', '', '')].values
+        dz = df[(shw, 'shw', 'dir', 'z', '', '')].values
+        n  = np.sqrt(dx**2 + dy**2 + dz**2)
+        with np.errstate(invalid='ignore'):
+            return np.degrees(np.arccos(np.clip(dz / np.where(n > 0, n, np.nan), -1, 1)))
+
+    for shw in ('primshw', 'secshw'):
+        if (shw, 'shw', 'dir', 'z', '', '') in df.columns:
+            df[(shw, 'shw', 'angle_z', '', '', '')] = _angle_z(shw)
+
+    if ('primshw', 'shw', 'dir', 'phi', '', '') in df.columns:
+        df[('primshw', 'shw', 'phi', '', '', '')] = df.primshw.shw.dir.phi
+    if ((('secshw', 'shw', 'dir', 'x', '', '') in df.columns)
+            and (('secshw', 'shw', 'dir', 'y', '', '') in df.columns)):
+        dx = df[('secshw', 'shw', 'dir', 'x', '', '')].values
+        dy = df[('secshw', 'shw', 'dir', 'y', '', '')].values
+        df[('secshw', 'shw', 'phi', '', '', '')] = np.arctan2(dx, dy) * 180 / np.pi
+
+    vtx_x_col = ('slc', 'vertex', 'x', '', '', '')
+    vtx_y_col = ('slc', 'vertex', 'y', '', '', '')
+    if vtx_x_col in df.columns and vtx_y_col in df.columns:
+        df[('slc', 'vertex', 'transverse_distance_beam_2', '', '', '')] = (
+            (df[vtx_x_col].values - beam_x) ** 2 +
+            (df[vtx_y_col].values - beam_y) ** 2
+        )
+
+    has_prim = ('primshw', 'shw', 'bestplane_energy', '', '', '') in df.columns
+    has_sec  = ('secshw',  'shw', 'bestplane_energy', '', '', '') in df.columns
+
+    if has_prim and has_sec:
+        E1 = df[('primshw', 'shw', 'bestplane_energy', '', '', '')].values
+        E2 = df[('secshw',  'shw', 'bestplane_energy', '', '', '')].values
+
+        def _unit(shw):
+            dx = df[(shw, 'shw', 'dir', 'x', '', '')].values
+            dy = df[(shw, 'shw', 'dir', 'y', '', '')].values
+            dz = df[(shw, 'shw', 'dir', 'z', '', '')].values
+            n  = np.sqrt(dx**2 + dy**2 + dz**2)
+            n  = np.where(n > 0, n, np.nan)
+            return dx/n, dy/n, dz/n
+
+        ux1, uy1, uz1 = _unit('primshw')
+        ux2, uy2, uz2 = _unit('secshw')
+
+        with np.errstate(invalid='ignore'):
+            ET1 = E1 * np.sqrt(np.clip(1 - uz1**2, 0, None))
+            ET2 = E2 * np.sqrt(np.clip(1 - uz2**2, 0, None))
+            cos_theta = np.clip(ux1*ux2 + uy1*uy2 + uz1*uz2, -1, 1)
+            df[('slc', 'm_alt', '', '', '', '')] = (
+                np.sqrt(2 * ET1 * ET2 * (1 - cos_theta)) * 1000  # GeV -> MeV
+            )
+
     return _mark_applied(df, name)

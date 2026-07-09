@@ -37,8 +37,8 @@ import os
 import re
 import sys
 
-sys.path.append("/exp/sbnd/data/users/lynnt/xsection/")
-import nueana as nue
+sys.path.append("/exp/sbnd/data/users/lnguyen/cafpyana_pi0")
+import hnl_analysis_with_cafpyana as nue
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -61,6 +61,11 @@ _OUTPUT_FILE = {
 _ALL_SELECTIONS = ["preprocess", "signal", "sideband", "preselect"]
 
 _DETVAR_RE = re.compile(r'^detvar_(.+)_(\d+)\.df$')
+
+# Sentinel distinguishing "caller didn't pass preprocess_fn" from "caller explicitly
+# passed None" (which means skip preprocessing entirely) -- same pattern as io.py's
+# load_mc/load_data.
+_UNSET = object()
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +107,8 @@ def _parse_detvar_files(input_dir: str) -> tuple[dict, dict]:
 # Dict builders
 # ---------------------------------------------------------------------------
 
-def build_dicts(input_dir: str, cv_key: str | None = None):
+def build_dicts(input_dir: str, cv_key: str | None = None, slc_key: str = "nuecc",
+                 preprocess_fn=_UNSET):
     """Load all CV and DV files; attach recombination detvars.
 
     Parameters
@@ -112,6 +118,21 @@ def build_dicts(input_dir: str, cv_key: str | None = None):
     cv_key : str, optional
         Key of the CV used as the reference for DV matching and recombination
         variations.  Defaults to the lexicographically first CV key found.
+    slc_key : str, optional
+        Table key for the slice-level analysis DataFrame within each raw
+        ``.df`` file, forwarded to :func:`~nueana.detvar.prepare_detvar_df`.
+        Defaults to ``"nuecc"``; pass ``"rec"`` for HNL-topology samples
+        produced via ``hnl_mcnu_detvar.py``.
+    preprocess_fn : callable or None, optional
+        Called as ``preprocess_fn(slc_df)`` on each CV/DV's slice-level table
+        before it's stored. Defaults to :func:`~nueana.preprocess.preprocess_mc`
+        when ``slc_key == "nuecc"`` and to ``None`` (skip preprocessing)
+        otherwise -- ``preprocess_mc`` applies nueCC-specific fixes (e.g.
+        ``add_phi``, which needs a ``primtrk.trk.dir.x/y`` column that doesn't
+        exist in the HNL/pi0 ``'rec'`` table). Pass an explicit callable (e.g.
+        a future HNL/pi0-specific preprocessing function) to override either
+        default, or ``None`` to force-skip preprocessing regardless of
+        ``slc_key``.
 
     Returns
     -------
@@ -134,9 +155,14 @@ def build_dicts(input_dir: str, cv_key: str | None = None):
             f"Available: {available_cv_keys}"
         )
 
+    if preprocess_fn is _UNSET:
+        preprocess_fn = nue.preprocess_mc if slc_key == "nuecc" else None
+
     def _load_preprocessed(path):
-        dvf = nue.prepare_detvar_df(path)
-        return dvf._replace(slc_df=nue.preprocess_mc(dvf.slc_df))
+        dvf = nue.prepare_detvar_df(path, slc_key=slc_key)
+        if preprocess_fn is not None:
+            dvf = dvf._replace(slc_df=preprocess_fn(dvf.slc_df))
+        return dvf
 
     # load CVs
     cv_dict: dict = {}
@@ -215,6 +241,20 @@ def main():
         ),
     )
     parser.add_argument(
+        "--slc-key",
+        dest="slc_key",
+        default="nuecc",
+        help=(
+            "Table key for the slice-level analysis DataFrame within each raw "
+            "detvar_*.df file. Default 'nuecc' (nueCC topology). Pass 'rec' for "
+            "HNL-topology samples produced via hnl_mcnu_detvar.py. Note: the "
+            "'signal'/'sideband' selection presets below apply nueCC's own "
+            "DEFAULT_CUTS/SIDEBAND_CUTS and are not meaningful for HNL selection "
+            "cuts -- for HNL, build with '-s preprocess' only and apply the real "
+            "cut sequence later via get_total_cov(..., cuts=<hnl_cuts>)."
+        ),
+    )
+    parser.add_argument(
         "--groups", "-g",
         nargs="+",
         default=None,
@@ -233,7 +273,7 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
 
     # ---- discover and load ----
-    cv_dict, dv_dict, cv_map = build_dicts(args.input_dir, cv_key=args.cv_key)
+    cv_dict, dv_dict, cv_map = build_dicts(args.input_dir, cv_key=args.cv_key, slc_key=args.slc_key)
     print(f"\nCV keys : {list(cv_dict.keys())}")
     print(f"DV keys : {list(dv_dict.keys())}")
     print(f"CV map  : {cv_map}")

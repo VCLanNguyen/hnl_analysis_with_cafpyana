@@ -247,10 +247,10 @@ def define_signal_hnl(indf):
     from .analysis import signal_dict_hnl
 
     signal_col = ('signal', '', '', '', '', '')
-    mask_cosmic = np.isnan(indf[('slc', 'prtl', 'E', '', '', '')])
-    # also label HNL cosmic as HNL since they are part of the signal region
-    indf.loc[mask_cosmic, signal_col] = signal_dict_hnl['hnl']
-    indf.loc[~mask_cosmic, signal_col] = signal_dict_hnl['hnl']
+    # HNL cosmic (mask via slc.prtl.E == NaN) is deliberately labeled HNL too, not
+    # signal_dict_hnl['hnlcosmic'] -- both are part of the signal region, so every row
+    # gets the same value regardless of the cosmic mask (no need to branch on it).
+    indf[signal_col] = signal_dict_hnl['hnl']
 
     return indf
 
