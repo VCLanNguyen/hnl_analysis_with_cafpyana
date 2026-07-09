@@ -68,6 +68,15 @@ _DETVAR_RE = re.compile(r'^detvar_(.+)_(\d+)\.df$')
 _UNSET = object()
 
 
+def _timing_calibration(df):
+    """Default preprocess_fn for slc_key='rec' (HNL/pi0 topology).
+
+    Matches mcbnb_df's own preprocessing, since detvar CV/DV samples are
+    detector variations of the same BNB overlay generator (see detvar/README.md).
+    """
+    return nue.preprocess_mcbnb(df)
+
+
 # ---------------------------------------------------------------------------
 # File discovery
 # ---------------------------------------------------------------------------
@@ -126,13 +135,9 @@ def build_dicts(input_dir: str, cv_key: str | None = None, slc_key: str = "nuecc
     preprocess_fn : callable or None, optional
         Called as ``preprocess_fn(slc_df)`` on each CV/DV's slice-level table
         before it's stored. Defaults to :func:`~nueana.preprocess.preprocess_mc`
-        when ``slc_key == "nuecc"`` and to ``None`` (skip preprocessing)
-        otherwise -- ``preprocess_mc`` applies nueCC-specific fixes (e.g.
-        ``add_phi``, which needs a ``primtrk.trk.dir.x/y`` column that doesn't
-        exist in the HNL/pi0 ``'rec'`` table). Pass an explicit callable (e.g.
-        a future HNL/pi0-specific preprocessing function) to override either
-        default, or ``None`` to force-skip preprocessing regardless of
-        ``slc_key``.
+        when ``slc_key == "nuecc"`` and to :func:`_timing_calibration` when
+        ``slc_key == "rec"`` (HNL/pi0). Pass an explicit callable to override
+        either default, or ``None`` to force-skip preprocessing.
 
     Returns
     -------
@@ -156,7 +161,12 @@ def build_dicts(input_dir: str, cv_key: str | None = None, slc_key: str = "nuecc
         )
 
     if preprocess_fn is _UNSET:
-        preprocess_fn = nue.preprocess_mc if slc_key == "nuecc" else None
+        if slc_key == "nuecc":
+            preprocess_fn = nue.preprocess_mc
+        elif slc_key == "rec":
+            preprocess_fn = _timing_calibration
+        else:
+            preprocess_fn = None
 
     def _load_preprocessed(path):
         dvf = nue.prepare_detvar_df(path, slc_key=slc_key)
