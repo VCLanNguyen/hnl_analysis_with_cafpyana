@@ -391,6 +391,7 @@ def load_mchnl(
     keys: list | None = None,
     mevprtl_key: str = 'mevprtl',
     rec_key: str = 'rec',
+    preprocess_fn=_UNSET,
 ) -> tuple:
     """Load and preprocess an HNL MeVPrtl MC HDF5 file.
 
@@ -417,6 +418,10 @@ def load_mchnl(
         Key of the MeVPrtl truth table.
     rec_key : str, default 'rec'
         Key of the main slc-level table.
+    preprocess_fn : callable or None, optional
+        Called as ``preprocess_fn(df)`` on the raw ``rec_key`` table before the
+        cosmic-weight correction. Defaults to
+        :func:`~nueana.preprocess.preprocess_mchnl`. Pass ``None`` to skip.
 
     Returns
     -------
@@ -433,19 +438,23 @@ def load_mchnl(
         vs. nu_pi0 channel, mass-dependent scale factors, ...), so it isn't
         baked in here.
     """
+    from .preprocess import preprocess_mchnl
     from .selection import define_signal_hnl
     from .utils import merge_hdr
 
     if keys is None:
         keys = ['hdr', rec_key, 'histpotdf']
     load_keys = keys if mevprtl_key in keys else keys + [mevprtl_key]
+    if preprocess_fn is _UNSET:
+        preprocess_fn = preprocess_mchnl
 
     # load_dfs defaults to n_max_concat=10 -- silently loads only the first 10 HDF5
     # splits if not told otherwise. Pass the file's actual split count explicitly so
     # a future mchnl production with more than 10 splits doesn't get silently
     # truncated here.
     dfs = load_dfs(file, keys2load=load_keys, n_max_concat=get_n_split(file))
-    df  = correct_cosmic_weight_mevprtl_df(dfs[rec_key], dfs[mevprtl_key], dfs['hdr'])
+    rec_df = preprocess_fn(dfs[rec_key]) if preprocess_fn is not None else dfs[rec_key]
+    df  = correct_cosmic_weight_mevprtl_df(rec_df, dfs[mevprtl_key], dfs['hdr'])
     df  = define_signal_hnl(df)
     df  = merge_hdr(dfs['hdr'], df)
 

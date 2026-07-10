@@ -236,17 +236,22 @@ def fix_timing_calibration(df: pd.DataFrame, *, period: float, t0_offset: float,
 
 
 def fix_databnb_timing_calibration(df: pd.DataFrame) -> pd.DataFrame:
-    """Drop bad-period rows and calibrate flash time per real run period (Data BNB only).
+    """Data-quality cut plus per-run-period flash time calibration (Data BNB only).
 
-    Wraps :func:`timing_calibration.data_filter_bad` then
-    :func:`timing_calibration.data_correct_good`. Unlike :func:`fix_timing_calibration`,
-    this uses per-run-period constants (``timing_calibration.bad_period_dict``/
-    ``good_period_dict``/``odict``/``pdict``) and drops rows, since real Data BNB's
-    calibration drifted across changing beam/LLRF conditions.
+    Drops slices without RWM timing info (``tdcRwm == 0``), then wraps
+    :func:`timing_calibration.data_filter_bad` (drops known-bad run periods) and
+    :func:`timing_calibration.data_correct_good` (per-run-period constants:
+    ``timing_calibration.bad_period_dict``/``good_period_dict``/``odict``/``pdict``).
+    Unlike :func:`fix_timing_calibration`, this drops rows and has no single fixed
+    period/offset, since real Data BNB's calibration drifted across changing
+    beam/LLRF conditions.
     """
     name = 'databnb_timing_calibration'
     if _skip_if_applied(df, name):
         return df
+    print("Removing entries with tdcRwm==0:", len(df[df.tdcRwm == 0]))
+    df = df[df.tdcRwm != 0].copy()
+    df['rwm_datetime'] = pd.to_datetime(df['tdcRwm'])
     df = tc.data_filter_bad(df, tc.bad_period_dict)
     df = tc.data_correct_good(df, tc.good_period_dict, tc.odict, tc.pdict)
     return _mark_applied(df, name)
