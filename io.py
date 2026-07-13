@@ -388,6 +388,7 @@ def load_mchnl(
     keys: list | None = None,
     mevprtl_key: str = 'mevprtl',
     rec_key: str = 'rec',
+    cuts=None,
     preprocess_fn=_UNSET,
 ) -> tuple:
     """Load and preprocess an HNL MeVPrtl MC HDF5 file.
@@ -415,6 +416,12 @@ def load_mchnl(
         Key of the MeVPrtl truth table.
     rec_key : str, default 'rec'
         Key of the main slc-level table.
+    cuts : list of CutSpec, optional
+        If supplied, passed to :func:`~nueana.selection.select` as the last
+        step, after ``simU``/``hnlM`` are extracted from the full (unselected)
+        DataFrame -- selection can otherwise remove every truth-matched row
+        and make that extraction raise. When None the full preprocessed
+        DataFrame is returned.
     preprocess_fn : callable or None, optional
         Called as ``preprocess_fn(df)`` on the raw ``rec_key`` table before the
         cosmic-weight correction. Defaults to
@@ -423,8 +430,8 @@ def load_mchnl(
     Returns
     -------
     df : pd.DataFrame
-        Preprocessed HNL DataFrame with header columns merged in and signal
-        categories defined.
+        Preprocessed (and optionally selected) HNL DataFrame with header
+        columns merged in and signal categories defined.
     pot : float
         HNL MC POT (unscaled).
     info : dict
@@ -436,7 +443,7 @@ def load_mchnl(
         baked in here.
     """
     from .preprocess import preprocess_mchnl
-    from .selection import define_signal_hnl
+    from .selection import define_signal_hnl, select
     from .utils import merge_hdr
 
     if keys is None:
@@ -459,4 +466,5 @@ def load_mchnl(
     simU = df[('slc', 'prtl', 'C2', '', '', '')].dropna().unique()[0]
     hnlM = df[('slc', 'prtl', 'M', '', '', '')].dropna().unique()[0] * 1000  # GeV -> MeV
 
-    return df, pot, {'simU': simU, 'hnlM': hnlM}
+    sel = select(df, cuts=cuts) if cuts is not None else df
+    return sel, pot, {'simU': simU, 'hnlM': hnlM}

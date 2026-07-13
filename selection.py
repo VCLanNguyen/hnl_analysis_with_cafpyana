@@ -45,7 +45,7 @@ from .classes import CutSpec
 from .utils import ensure_lexsorted
 
 
-__all__ = ['drop_cuts', 'modify_cut', 'select', 'select_sideband',
+__all__ = ['drop_cuts', 'modify_cut', 'select', 'select_sideband', 'union_cut',
            'define_signal_pi0', 'define_signal_hnl']
 
 
@@ -59,6 +59,26 @@ def _mask(df, spec):
         return spec.fn(df)
     series = spec.accessor(df) if spec.accessor is not None else reduce(getattr, spec.variable, df)
     return (series > spec.min) & (series < spec.max)
+
+
+def _and_mask(df, cuts):
+    """AND a list of CutSpec masks, all evaluated against the same (unnarrowed) df."""
+    mask = pd.Series(True, index=df.index)
+    for spec in cuts:
+        mask &= _mask(df, spec)
+    return mask
+
+
+def union_cut(name, cuts_a, cuts_b, label=None):
+    """Build a single CutSpec that is the OR of two CutSpec chains.
+
+    Lets a selection like "(1shw AND ...) OR (2shw AND ...)" be expressed as one
+    CutSpec, so it folds into select()'s ordinary sequential-AND cuts= list (and
+    therefore into load_mc/load_data/load_mchnl's load-time cuts= too) instead of
+    needing a separate post-load union step.
+    """
+    return CutSpec(name, fn=lambda df: _and_mask(df, cuts_a) | _and_mask(df, cuts_b),
+                    label=label or name)
 
 
 def drop_cuts(cuts, *names):

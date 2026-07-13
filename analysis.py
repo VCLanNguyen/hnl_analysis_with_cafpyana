@@ -43,7 +43,7 @@ from functools import partial
 
 from . import config
 from .classes import CutSpec, VariableConfig
-from .selection import modify_cut, drop_cuts, select
+from .selection import modify_cut, drop_cuts, select, union_cut
 from .utils import ensure_lexsorted, sci_notation
 from makedf.util import *
 from pyanalib.pandas_helpers import *
@@ -67,6 +67,9 @@ __all__ = [
     'cut_muon_rejection', 'InFiducial', 'InSpill', 'InScore',
     # cut sequences
     'DEFAULT_CUTS', 'SIDEBAND_CUTS',
+    'PI0_PRESEL_CUTS', 'PI0_CUTS_COMMON', 'PI0_CUTS_1SHW', 'PI0_CUTS_2SHW',
+    'PI0_CUTS_1SHW_ANGLE', 'PI0_CUTS_2SHW_ANGLE', 'PI0_CUTS_EITHER_SHW',
+    'PI0_CUTS_EITHER_ANGLE', 'PI0_CUT_LISTS', 'select_by_mode_pi0',
     # truth categorisation
     'define_signal', 'define_generic',
     # analysis variables
@@ -311,6 +314,81 @@ SIDEBAND_CUTS = drop_cuts(SIDEBAND_CUTS, "shower_length")
 SIDEBAND_CUTS = modify_cut(SIDEBAND_CUTS, "conversion_gap", min=2,   max=np.inf, label="conversion gap > 2 cm")
 SIDEBAND_CUTS = modify_cut(SIDEBAND_CUTS, "dedx",           min=3,   max=6,      label="dE/dx [3, 6] MeV/cm")
 SIDEBAND_CUTS = modify_cut(SIDEBAND_CUTS, "opening_angle",  min=0,   max=1.0,    label="opening angle [0, 1.0] rad")
+
+
+# ---------------------------------------------------------------------------
+# PI0/HNL cut sequences (nu_pi0 topology -- distinct from nueCC's DEFAULT_CUTS,
+# which uses nueCC-specific column names/thresholds not applicable here)
+# ---------------------------------------------------------------------------
+
+PI0_PRESEL_CUTS = [
+    CutSpec("clear_cosmic", fn=lambda df: df.slc.is_clear_cosmic == 0,
+            label="not clear cosmic"),
+    CutSpec("nu_score", variable=("slc", "nu_score"), min=0.5,
+            label="nu score > 0.5"),
+    CutSpec("fiducial_volume",
+            fn=lambda df: InFV(df.slc.vertex, det="SBND_nohighyz", inzback=0),
+            label="fiducial volume (conditional xz/y box, y<100 for z>250)"),
+]
+
+PI0_CUTS_COMMON = PI0_PRESEL_CUTS + [
+    CutSpec("flash_score", variable=("slc", "barycenterFM", "score"), min=0.02,
+            label="flash match score > 0.02"),
+    CutSpec("flash_time", variable=("slc", "barycenterFM", "flashTime_calib"),
+            min=-250, max=2250, label="flash time in [-250, 2250] ns"),
+    CutSpec("track_veto", fn=lambda df: df.slc.n_trks == 0,
+            label="no reconstructed tracks"),
+]
+
+PI0_CUTS_1SHW = PI0_CUTS_COMMON + [
+    CutSpec("n1shw", fn=lambda df: df.slc.n_shws == 1, label="exactly 1 shower"),
+]
+PI0_CUTS_2SHW = PI0_CUTS_COMMON + [
+    CutSpec("n2shw", fn=lambda df: df.slc.n_shws == 2, label="exactly 2 showers"),
+]
+
+# Traditional angle cut, kept as a baseline to compare against a BDT (cut values from
+# Lan's thesis).
+PI0_CUTS_1SHW_ANGLE = PI0_CUTS_1SHW + [
+    CutSpec("angle", variable=("primshw", "shw", "angle_z"), max=25, label="angle_z < 25 deg"),
+]
+PI0_CUTS_2SHW_ANGLE = PI0_CUTS_2SHW + [
+    CutSpec("angle", variable=("primshw", "shw", "angle_z"), max=35, label="angle_z < 35 deg"),
+]
+
+# 'either_*' modes are the union (OR) of the two shower-multiplicity selections'
+# tail cuts (the part beyond PI0_CUTS_COMMON) -- union_cut() folds that OR into a
+# single CutSpec, so these are ordinary sequential (AND) CutSpec lists like every
+# other entry in PI0_CUT_LISTS below, foldable into load-time cuts=.
+PI0_CUTS_EITHER_SHW = PI0_CUTS_COMMON + [
+    union_cut("either_shw", PI0_CUTS_1SHW[len(PI0_CUTS_COMMON):],
+              PI0_CUTS_2SHW[len(PI0_CUTS_COMMON):],
+              label="exactly 1 shower OR exactly 2 showers"),
+]
+PI0_CUTS_EITHER_ANGLE = PI0_CUTS_COMMON + [
+    union_cut("either_angle", PI0_CUTS_1SHW_ANGLE[len(PI0_CUTS_COMMON):],
+              PI0_CUTS_2SHW_ANGLE[len(PI0_CUTS_COMMON):],
+              label="(1 shower, angle_z < 25 deg) OR (2 showers, angle_z < 35 deg)"),
+]
+
+PI0_CUT_LISTS = {
+    'presel':       PI0_PRESEL_CUTS,
+    '1shw':         PI0_CUTS_1SHW,
+    '2shw':         PI0_CUTS_2SHW,
+    '1shw_angle':   PI0_CUTS_1SHW_ANGLE,
+    '2shw_angle':   PI0_CUTS_2SHW_ANGLE,
+    'either_shw':   PI0_CUTS_EITHER_SHW,
+    'either_angle': PI0_CUTS_EITHER_ANGLE,
+}
+
+def select_by_mode_pi0(df, mode):
+    """Apply the named PI0/HNL selection to df. Single select() call for every mode
+    (including 'either_shw'/'either_angle') -- foldable into load_mc/load_data/
+    load_mchnl's own cuts= kwarg.
+    """
+    if mode not in PI0_CUT_LISTS:
+        raise ValueError(f"mode must be one of {list(PI0_CUT_LISTS)}, got {mode!r}")
+    return select(df, cuts=PI0_CUT_LISTS[mode])
 
 
 # ---------------------------------------------------------------------------
