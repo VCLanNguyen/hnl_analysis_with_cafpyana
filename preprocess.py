@@ -282,9 +282,11 @@ def preprocess_mcbnb(df: pd.DataFrame) -> pd.DataFrame:
     """Apply :func:`preprocess_mc` plus BNB overlay generator timing calibration.
 
     Adds :func:`fix_bfm_flashtime_mcbnb` and :func:`fix_timing_calibration`
-    (``timing_calibration.mcbnb_period_calib``/``mcbnb_offset_calib``). Also the
-    correct call for any BNB-overlay-generator sample (e.g. detvar CV/DV frames),
-    not just mcbnb_df.
+    (``timing_calibration.mcbnb_period_calib``/``mcbnb_offset_calib``), plus
+    :func:`add_variables` (derived kinematic columns -- was a separate notebook
+    "Add New Variables" step, now applied at load time like nueCC's convention).
+    Also the correct call for any BNB-overlay-generator sample (e.g. detvar CV/DV
+    frames), not just mcbnb_df.
 
     Parameters
     ----------
@@ -294,6 +296,7 @@ def preprocess_mcbnb(df: pd.DataFrame) -> pd.DataFrame:
     df = preprocess_mc(df)
     df = fix_bfm_flashtime_mcbnb(df)
     df = fix_timing_calibration(df, period=tc.mcbnb_period_calib, t0_offset=tc.mcbnb_offset_calib)
+    df = add_variables(df)
     return df
 
 
@@ -301,7 +304,9 @@ def preprocess_mchnl(df: pd.DataFrame) -> pd.DataFrame:
     """Apply :func:`preprocess_mc` plus MeVPrtl generator timing calibration.
 
     Adds :func:`fix_bfm_flashtime_mchnl` and :func:`fix_timing_calibration`
-    (``timing_calibration.mchnl_period_calib``/``mchnl_offset_calib``).
+    (``timing_calibration.mchnl_period_calib``/``mchnl_offset_calib``), plus
+    :func:`add_variables` (derived kinematic columns -- was a separate notebook
+    "Add New Variables" step, now applied at load time like nueCC's convention).
 
     Parameters
     ----------
@@ -311,6 +316,7 @@ def preprocess_mchnl(df: pd.DataFrame) -> pd.DataFrame:
     df = preprocess_mc(df)
     df = fix_bfm_flashtime_mchnl(df)
     df = fix_timing_calibration(df, period=tc.mchnl_period_calib, t0_offset=tc.mchnl_offset_calib)
+    df = add_variables(df)
     return df
 
 
@@ -335,7 +341,9 @@ def preprocess_databnb(df: pd.DataFrame) -> pd.DataFrame:
     """Apply :func:`preprocess_data` plus real Data BNB's timing calibration.
 
     Adds :func:`fix_databnb_timing_calibration` (drops bad-period rows,
-    corrects each good period individually).
+    corrects each good period individually), plus :func:`add_variables` (derived
+    kinematic columns -- was a separate notebook "Add New Variables" step, now
+    applied at load time like nueCC's convention).
 
     Parameters
     ----------
@@ -344,6 +352,7 @@ def preprocess_databnb(df: pd.DataFrame) -> pd.DataFrame:
     """
     df = preprocess_data(df)
     df = fix_databnb_timing_calibration(df)
+    df = add_variables(df)
     return df
 
 
@@ -351,7 +360,9 @@ def preprocess_dataoff(df: pd.DataFrame) -> pd.DataFrame:
     """Apply :func:`preprocess_data` plus Data Offbeam+Light timing calibration.
 
     Adds :func:`fix_timing_calibration` (``timing_calibration.offbeam_period_calib``/
-    ``offbeam_offset_calib``, ``ifData=True``).
+    ``offbeam_offset_calib``, ``ifData=True``), plus :func:`add_variables` (derived
+    kinematic columns -- was a separate notebook "Add New Variables" step, now
+    applied at load time like nueCC's convention).
 
     Parameters
     ----------
@@ -361,6 +372,7 @@ def preprocess_dataoff(df: pd.DataFrame) -> pd.DataFrame:
     df = preprocess_data(df)
     df = fix_timing_calibration(df, period=tc.offbeam_period_calib, t0_offset=tc.offbeam_offset_calib,
                                  ifData=True)
+    df = add_variables(df)
     return df
 
 
@@ -558,23 +570,23 @@ def add_variables(df: pd.DataFrame, beam_x: float = -74.0, beam_y: float = 0.0) 
     Columns added:
 
     Per shower (primshw / secshw if present):
-      (shw, 'shw', 'angle_z', '', '', '')          -- angle w.r.t. beam axis z [deg]
       (shw, 'shw', 'phi', '', '', '')              -- azimuthal angle [deg]
 
-    Slice-level:
-      ('slc', 'vertex', 'transverse_distance_beam_2', '', '', '')
-                                                    -- d_T^2 = (vtx_x-beam_x)^2 + (vtx_y-beam_y)^2 [cm^2]
-
-    Two-shower only (when secshw columns are present):
-      ('slc', 'm_alt', '', '', '', '')              -- transverse mass of the shower pair [MeV]
-                                                       m_alt = sqrt(2*ET1*ET2*(1-cos_theta))*1000
+    ``angle_z``/``transverse_distance_beam_2``/``m_alt`` are NOT computed here for the
+    HNL/pi0 'rec' table -- cafpyana's own maker (analysis_village/hnl_nuee_nupi0/
+    makedf/make_hnldf.py's own add_variables()) already computes identical values for
+    these at df-production time, confirmed present on the raw loaded DataFrame.
+    Recomputing them here would be a harmless but wasted duplicate (same formula, same
+    inputs). See the commented-out code below if a future 'rec' source ever lacks them.
 
     Parameters
     ----------
     df : pd.DataFrame
         Slice-level DataFrame produced by topology.make_topo_df.
     beam_x, beam_y : float
-        Beam centre x and y position [cm]. Default: (-74, 0).
+        Beam centre x and y position [cm]. Default: (-74, 0). Unused now that the
+        transverse_distance_beam_2 block below is commented out; kept in the
+        signature so call sites don't need to change if it's reinstated.
 
     Returns
     -------
@@ -591,17 +603,17 @@ def add_variables(df: pd.DataFrame, beam_x: float = -74.0, beam_y: float = 0.0) 
     # recomputing the same arctan2 a second time under a different column path.
     df = add_phi(df)
 
-    def _angle_z(shw):
-        dx = df[(shw, 'shw', 'dir', 'x', '', '')].values
-        dy = df[(shw, 'shw', 'dir', 'y', '', '')].values
-        dz = df[(shw, 'shw', 'dir', 'z', '', '')].values
-        n  = np.sqrt(dx**2 + dy**2 + dz**2)
-        with np.errstate(invalid='ignore'):
-            return np.degrees(np.arccos(np.clip(dz / np.where(n > 0, n, np.nan), -1, 1)))
-
-    for shw in ('primshw', 'secshw'):
-        if (shw, 'shw', 'dir', 'z', '', '') in df.columns:
-            df[(shw, 'shw', 'angle_z', '', '', '')] = _angle_z(shw)
+    # def _angle_z(shw):
+    #     dx = df[(shw, 'shw', 'dir', 'x', '', '')].values
+    #     dy = df[(shw, 'shw', 'dir', 'y', '', '')].values
+    #     dz = df[(shw, 'shw', 'dir', 'z', '', '')].values
+    #     n  = np.sqrt(dx**2 + dy**2 + dz**2)
+    #     with np.errstate(invalid='ignore'):
+    #         return np.degrees(np.arccos(np.clip(dz / np.where(n > 0, n, np.nan), -1, 1)))
+    #
+    # for shw in ('primshw', 'secshw'):
+    #     if (shw, 'shw', 'dir', 'z', '', '') in df.columns:
+    #         df[(shw, 'shw', 'angle_z', '', '', '')] = _angle_z(shw)
 
     if ('primshw', 'shw', 'dir', 'phi', '', '') in df.columns:
         df[('primshw', 'shw', 'phi', '', '', '')] = df.primshw.shw.dir.phi
@@ -611,38 +623,38 @@ def add_variables(df: pd.DataFrame, beam_x: float = -74.0, beam_y: float = 0.0) 
         dy = df[('secshw', 'shw', 'dir', 'y', '', '')].values
         df[('secshw', 'shw', 'phi', '', '', '')] = np.arctan2(dx, dy) * 180 / np.pi
 
-    vtx_x_col = ('slc', 'vertex', 'x', '', '', '')
-    vtx_y_col = ('slc', 'vertex', 'y', '', '', '')
-    if vtx_x_col in df.columns and vtx_y_col in df.columns:
-        df[('slc', 'vertex', 'transverse_distance_beam_2', '', '', '')] = (
-            (df[vtx_x_col].values - beam_x) ** 2 +
-            (df[vtx_y_col].values - beam_y) ** 2
-        )
-
-    has_prim = ('primshw', 'shw', 'bestplane_energy', '', '', '') in df.columns
-    has_sec  = ('secshw',  'shw', 'bestplane_energy', '', '', '') in df.columns
-
-    if has_prim and has_sec:
-        E1 = df[('primshw', 'shw', 'bestplane_energy', '', '', '')].values
-        E2 = df[('secshw',  'shw', 'bestplane_energy', '', '', '')].values
-
-        def _unit(shw):
-            dx = df[(shw, 'shw', 'dir', 'x', '', '')].values
-            dy = df[(shw, 'shw', 'dir', 'y', '', '')].values
-            dz = df[(shw, 'shw', 'dir', 'z', '', '')].values
-            n  = np.sqrt(dx**2 + dy**2 + dz**2)
-            n  = np.where(n > 0, n, np.nan)
-            return dx/n, dy/n, dz/n
-
-        ux1, uy1, uz1 = _unit('primshw')
-        ux2, uy2, uz2 = _unit('secshw')
-
-        with np.errstate(invalid='ignore'):
-            ET1 = E1 * np.sqrt(np.clip(1 - uz1**2, 0, None))
-            ET2 = E2 * np.sqrt(np.clip(1 - uz2**2, 0, None))
-            cos_theta = np.clip(ux1*ux2 + uy1*uy2 + uz1*uz2, -1, 1)
-            df[('slc', 'm_alt', '', '', '', '')] = (
-                np.sqrt(2 * ET1 * ET2 * (1 - cos_theta)) * 1000  # GeV -> MeV
-            )
+    # vtx_x_col = ('slc', 'vertex', 'x', '', '', '')
+    # vtx_y_col = ('slc', 'vertex', 'y', '', '', '')
+    # if vtx_x_col in df.columns and vtx_y_col in df.columns:
+    #     df[('slc', 'vertex', 'transverse_distance_beam_2', '', '', '')] = (
+    #         (df[vtx_x_col].values - beam_x) ** 2 +
+    #         (df[vtx_y_col].values - beam_y) ** 2
+    #     )
+    #
+    # has_prim = ('primshw', 'shw', 'bestplane_energy', '', '', '') in df.columns
+    # has_sec  = ('secshw',  'shw', 'bestplane_energy', '', '', '') in df.columns
+    #
+    # if has_prim and has_sec:
+    #     E1 = df[('primshw', 'shw', 'bestplane_energy', '', '', '')].values
+    #     E2 = df[('secshw',  'shw', 'bestplane_energy', '', '', '')].values
+    #
+    #     def _unit(shw):
+    #         dx = df[(shw, 'shw', 'dir', 'x', '', '')].values
+    #         dy = df[(shw, 'shw', 'dir', 'y', '', '')].values
+    #         dz = df[(shw, 'shw', 'dir', 'z', '', '')].values
+    #         n  = np.sqrt(dx**2 + dy**2 + dz**2)
+    #         n  = np.where(n > 0, n, np.nan)
+    #         return dx/n, dy/n, dz/n
+    #
+    #     ux1, uy1, uz1 = _unit('primshw')
+    #     ux2, uy2, uz2 = _unit('secshw')
+    #
+    #     with np.errstate(invalid='ignore'):
+    #         ET1 = E1 * np.sqrt(np.clip(1 - uz1**2, 0, None))
+    #         ET2 = E2 * np.sqrt(np.clip(1 - uz2**2, 0, None))
+    #         cos_theta = np.clip(ux1*ux2 + uy1*uy2 + uz1*uz2, -1, 1)
+    #         df[('slc', 'm_alt', '', '', '', '')] = (
+    #             np.sqrt(2 * ET1 * ET2 * (1 - cos_theta)) * 1000  # GeV -> MeV
+    #         )
 
     return _mark_applied(df, name)

@@ -178,9 +178,6 @@ def correct_cosmic_weight_mevprtl_df(indf_rec, indf_truth, indf_hdr):
 # High-level loaders
 # ---------------------------------------------------------------------------
 
-_DEFAULT_MC_KEYS   = ['hdr', 'nuecc', 'histpotdf', 'histgenevtdf']
-_DEFAULT_DATA_KEYS = ['hdr', 'nuecc', 'histpotdf']
-
 def load_mc(
     file: str,
     keys: list | None = None,
@@ -206,7 +203,7 @@ def load_mc(
         Path to the HDF5 file.
     keys : list of str, optional
         Table keys to load.  Defaults to
-        ``['hdr', 'nuecc', 'histpotdf', 'histgenevtdf']``.
+        ``['hdr', rec_key, 'histpotdf', 'histgenevtdf']``.
     cuts : list of CutSpec, optional
         If supplied, passed to :func:`~nueana.selection.select`.
         When None the full preprocessed DataFrame is returned.
@@ -263,7 +260,7 @@ def load_mc(
     from .utils import merge_hdr
 
     if keys is None:
-        keys = _DEFAULT_MC_KEYS
+        keys = ['hdr', rec_key, 'histpotdf', 'histgenevtdf']
     if preprocess_fn is _UNSET:
         preprocess_fn = preprocess_mc
     if define_signal_fn is _UNSET:
@@ -321,7 +318,7 @@ def load_data(
     file : str
         Path to the HDF5 file.
     keys : list of str, optional
-        Table keys to load.  Defaults to ``['hdr', 'nuecc', 'histpotdf']``.
+        Table keys to load.  Defaults to ``['hdr', rec_key, 'histpotdf']``.
     onbeam : bool, default True
         True for on-beam (BNB) data; False for off-beam.  Controls which
         gate counter is returned and whether the offbeam signal category is
@@ -359,7 +356,7 @@ def load_data(
     from .analysis import signal_dict
 
     if keys is None:
-        keys = _DEFAULT_DATA_KEYS
+        keys = ['hdr', rec_key, 'histpotdf']
     if preprocess_fn is _UNSET:
         preprocess_fn = preprocess_data
     if offbeam_signal_value is _UNSET:
