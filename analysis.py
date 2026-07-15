@@ -197,7 +197,12 @@ NTARGETS_UNC  = 0.01  # fractional uncertainty on number of Ar targets
 # Cut helper functions
 # ---------------------------------------------------------------------------
 
-FV_DET    = "SBND_nu26"
+# "SBND_nu26" was never a valid `det` value in cafpyana's makedf.util.InFV
+# (checked full git history, zero hits) -- this DEFAULT_CUTS chain never
+# actually worked against this cafpyana repo. Fixed 2026-07-14 on this
+# baseline_test branch, per user's physics judgment, purely to get a working
+# comparison baseline (same fix applied in cafpybara/analyses/nuecc/analysis.py).
+FV_DET    = "SBND_nohighyz"
 FV_INZBACK = 0
 
 
