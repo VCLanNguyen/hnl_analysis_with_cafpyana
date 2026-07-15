@@ -13,7 +13,7 @@ from .syst import calc_matrices, get_syst, get_syst_df, get_detvar_systs
 from .detvar import load_detvar_dict
 from .classes import SystematicsOutput, XSecInputs
 from .analysis import integrated_flux, signal_dict, POT_NORM_UNC, NTARGETS_UNC
-from .preprocess import preprocess_mc, add_pi0
+from .preprocess import preprocess_mc, add_pi0, fix_sec_shw_energy
 from . import config
 
 __all__ = [
@@ -299,6 +299,10 @@ def get_intime_cov(selected_df, var, bins,
     scale = mcbnb_ngen / mcint_dfs['histgenevtdf'].TotalGenEvents.sum()
     mcint_df = mcint_dfs['nuecc']
     mcint_df = preprocess_mc(mcint_df)
+    # add_pi0() requires secshw.shw.reco_energy to already be set (its own
+    # docstring says so) -- primshw's is baked in at maker time for nueCC
+    # samples, but secshw's never was here.
+    mcint_df = fix_sec_shw_energy(mcint_df)
     mcint_df = add_pi0(mcint_df)
 
     if select_region == "signal":
